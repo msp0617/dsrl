@@ -14,16 +14,28 @@ lives in `o2o_utils.py`, plus small marked changes in `utils.py` and
 `use_wandb=True`, so the robomimic tasks run in an environment where neither is
 installed. Both used to be hard imports at module level.
 
-**Resume.** `ResumeCheckpointCallback` writes weights, the replay buffer and the
-step counters on a period measured in environment steps. It alternates between
-two slots and writes `run_state.json` last, so a session killed mid-save still
-leaves the previous checkpoint intact. On start, `train_dsrl.py` reads that file
-and continues: it restores the noise critic's optimizer and `log_ent_coef`,
-which upstream `save`/`set_parameters` would drop, skips the initial rollout,
-and passes only the remaining budget to `learn`.
+**Resume.** `ResumeCheckpointCallback` writes weights, the replay buffer, the
+random state and the step counters on a period measured in environment steps.
+It alternates between two slots and writes `run_state.json` last, so a session
+killed mid-save still leaves the previous checkpoint intact, and the reader
+falls back to the older slot when the newest archive turns out to be truncated.
+On start, `train_dsrl.py` continues from the newest usable slot: it restores the
+noise critic's optimizer and `log_ent_coef`, which upstream `save` and
+`set_parameters` would drop, continues the random stream instead of replaying it
+from the seed, skips the initial rollout, and passes only the remaining budget
+to `learn`.
 
 Resume needs a log directory that survives the session. Pass `exp_id=<name>` and
 the run writes to `${log_dir}/<name>` instead of a timestamped folder.
+
+Three things are refused up front, before the environments and the diffusion
+policy are built: a checkpoint written by a differently shaped run, a checkpoint
+with no replay buffer beside it, and a buffer too small for the requested
+budget. Each of those otherwise fails hours in, or worse, does not fail at all.
+
+Two limitations worth knowing. The vectorised environment is reset on resume, so
+each restart truncates the episodes in flight. And an evaluation that a session
+dies during is simply lost, since only whole evaluations reach the CSV.
 
 **Units.** `train.total_env_steps` and the eval and checkpoint periods are all in
 original-environment steps, the unit the paper's x axis uses. One SB3 timestep is
@@ -42,7 +54,30 @@ preallocated arrays, which makes checkpointing it impractical. It is now
 `train.buffer_size`. Slots are `buffer_size / n_envs` and one slot holds one
 action chunk per env, so a run needs
 `init_rollout_steps + offline_adds + total_env_steps / (act_steps * n_envs)` of
-them.
+them. `check_buffer_capacity` enforces this at startup.
+
+## Disk
+
+A checkpoint is dominated by the optimizer state of a 3x2048 critic pair:
+
+| part | size |
+|---|---|
+| policy, including the target critic | 170 MB |
+| actor and critic optimizers | 204 MB |
+| noise critic and its optimizer | 204 MB |
+| replay buffer | 60 MB |
+
+That is about 640 MB per slot and 1.3 GB per run with both slots. Nine runs do
+not fit in a 15 GB Drive, so delete a finished run's `checkpoint/` directory once
+its CSVs are safe. The CSVs, not the weights, are the result.
+
+## Evaluation cost
+
+One evaluation is `num_evals` episodes of 300 environment steps, so 200 episodes
+cost 60,000 environment steps of simulation. Evaluating every 5,000 training
+steps therefore spends more simulation on measurement than on training. The
+early phase compensates with `num_evals_early`, which halves the episodes while
+the schedule is dense.
 
 ## Running
 
@@ -71,9 +106,16 @@ python scripts/make_offline_chunks.py \
 `python scripts/test_make_offline_chunks.py` checks the regrouping without
 needing mujoco or torch.
 
+## Checks
+
+`python scripts/test_resume_state.py` covers the crash-recovery bookkeeping with
+stub modules, so slot alternation, the fallback to the older slot and the config
+fingerprint can be exercised without torch or mujoco.
+`python scripts/test_make_offline_chunks.py` covers the data conversion.
+
 ## Known upstream issue
 
 `ReplayBuffer.sample` in the stable-baselines3 submodule builds its sampling
 probabilities with length `self.pos` but draws indices over `buffer_size` once
 the buffer is full, so a full buffer raises. Sizing the buffer above the run
-length avoids it.
+length avoids it, which is what the startup check enforces.

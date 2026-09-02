@@ -29,9 +29,13 @@ from env_utils import (
 from o2o_utils import (
     DSRLResumable,
     ResumeCheckpointCallback,
-    read_run_state,
+    check_buffer_capacity,
+    check_fingerprint,
+    config_fingerprint,
+    read_run_states,
     resolve_ckpt_dir,
     restore_agent,
+    restore_rng_state,
 )
 from utils import load_base_policy, load_offline_data, collect_rollouts, LoggingCallback
 
@@ -84,6 +88,37 @@ def main(cfg: OmegaConf):
 
     num_env = cfg.env.n_envs
 
+    variant = str(cfg.get("variant", "baseline") or "baseline")
+    if variant != "baseline":
+        raise NotImplementedError(
+            "variant=%s is not implemented yet, so this run would silently be another "
+            "baseline. Only variant=baseline is available." % variant
+        )
+
+    # A 10M-transition buffer costs several GB and makes checkpointing the
+    # buffer impractical; size it to the run instead.
+    default_buffer_size = 20000000 if cfg.algorithm == 'dsrl_sac' else 10000000
+    buffer_size = int(cfg.train.get("buffer_size", default_buffer_size))
+    offline_mix_ratio = float(cfg.train.get("offline_mix_ratio", -1))
+    replay_buffer_kwargs = None
+    if offline_mix_ratio > 0:
+        replay_buffer_kwargs = dict(offline_mix_ratio=offline_mix_ratio)
+    check_buffer_capacity(cfg, buffer_size)
+
+    # Everything that can rule out this run is checked before the environments
+    # and the diffusion policy are built, which costs minutes.
+    ckpt_dir = resolve_ckpt_dir(cfg)
+    candidates = read_run_states(ckpt_dir) if cfg.get("resume", True) else []
+    if candidates:
+        check_fingerprint(candidates[0], cfg)
+        if all(c["replay_buffer_path"] is None for c in candidates):
+            raise RuntimeError(
+                "There is a checkpoint in %s but no replay buffer beside it. An off-policy "
+                "agent resumed with an empty buffer would train on almost nothing and quietly "
+                "destroy its critics. Re-run with resume=False to start over, or remove the "
+                "directory. Runs meant to be resumed need save_replay_buffer=True." % ckpt_dir
+            )
+
     def make_env():
         if cfg.env_name in GYM_ENVS:
             import d4rl  # noqa: F401  (only the gym tasks need d4rl)
@@ -116,14 +151,6 @@ def main(cfg: OmegaConf):
         post_linear_modules=post_linear_modules,
         n_critics=cfg.train.n_critics,
     )
-
-    # A 10M-transition buffer costs several GB and makes checkpointing the
-    # buffer impractical; size it to the run instead.
-    buffer_size = int(cfg.train.get("buffer_size", 10000000))
-    offline_mix_ratio = float(cfg.train.get("offline_mix_ratio", -1))
-    replay_buffer_kwargs = None
-    if offline_mix_ratio > 0:
-        replay_buffer_kwargs = dict(offline_mix_ratio=offline_mix_ratio)
 
     if cfg.algorithm == 'dsrl_sac':
         model = SAC(
@@ -191,6 +218,7 @@ def main(cfg: OmegaConf):
     eval_every_env = int(eval_cfg.get("every_env", 0)) if eval_cfg else 0
     eval_every_env_early = int(eval_cfg.get("every_env_early", 0)) if eval_cfg else 0
     eval_early_until_env = int(eval_cfg.get("early_until_env", 0)) if eval_cfg else 0
+    num_evals_early = int(eval_cfg.get("num_evals_early", 0)) if eval_cfg else 0
 
     logging_callback = LoggingCallback(
         action_chunk = cfg.act_steps,
@@ -209,20 +237,32 @@ def main(cfg: OmegaConf):
         eval_every_env=eval_every_env,
         eval_every_env_early=eval_every_env_early,
         eval_early_until_env=eval_early_until_env,
+        eval_episodes_early=int(num_evals_early / num_env_eval) if num_evals_early else 0,
     )
 
-    ckpt_dir = resolve_ckpt_dir(cfg)
-    state = read_run_state(ckpt_dir) if cfg.get("resume", True) else None
+    state = None
+    for candidate in candidates:
+        try:
+            restore_agent(model, candidate["model_path"], device=cfg.device)
+            model.load_replay_buffer(candidate["replay_buffer_path"])
+        except Exception as exc:  # truncated archive, interrupted save, bad pickle
+            print(
+                "[resume] slot %s did not load (%s: %s), falling back"
+                % (candidate["slot"], type(exc).__name__, exc),
+                flush=True,
+            )
+            continue
+        state = candidate
+        break
+
+    if candidates and state is None:
+        raise RuntimeError(
+            "Found checkpoints in %s but none of them could be loaded." % ckpt_dir
+        )
 
     if state is not None:
-        restore_agent(model, state["model_path"], device=cfg.device)
-        if state["replay_buffer_path"] is not None:
-            model.load_replay_buffer(state["replay_buffer_path"])
-        else:
-            warnings.warn(
-                "Resuming without a replay buffer: an off-policy run restarted "
-                "with an empty buffer is not a continuation of the same run."
-            )
+        if state["rng_path"] is not None:
+            restore_rng_state(state["rng_path"])
         model.num_timesteps = int(state["num_timesteps"])
         model._episode_num = int(state.get("episode_num", 0))
         model._n_updates = int(state.get("n_updates", 0))
@@ -263,6 +303,7 @@ def main(cfg: OmegaConf):
         every_env_steps=ckpt_every_env_steps,
         logging_callback=logging_callback,
         save_replay_buffer=cfg.save_replay_buffer,
+        fingerprint=config_fingerprint(cfg),
     )
 
     # Budget. `total_env_steps` is in original-environment steps and covers the
@@ -290,9 +331,9 @@ def main(cfg: OmegaConf):
             reset_num_timesteps=state is None,
         )
 
-    # Save the final model
-    if len(cfg.name) > 0:
-        model.save(os.path.join(ckpt_dir, "final"))
+    # The rolling checkpoint writes on training end, so there is no separate
+    # final archive to save.
+    print("[done] %d env steps, checkpoint in %s" % (logging_callback.total_timesteps, ckpt_dir), flush=True)
 
     # Close environment and wandb
     env.close()

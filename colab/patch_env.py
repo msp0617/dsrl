@@ -9,16 +9,18 @@ every new Colab session (run this once after installing the environment).
    not build) under Python 3.10 with mujoco 3.x. The import is made optional.
 """
 
-import site
 import sys
 from pathlib import Path
 
 
 def patch_robomimic_env_robosuite():
-    candidates = [Path(p) / "robomimic/envs/env_robosuite.py" for p in site.getsitepackages()]
-    path = next((p for p in candidates if p.exists()), None)
-    if path is None:
-        raise FileNotFoundError("robomimic/envs/env_robosuite.py not found in site-packages")
+    # Ask the package where it lives rather than guessing at site-packages,
+    # which misses editable installs and some virtualenv layouts.
+    import robomimic
+
+    path = Path(robomimic.__file__).parent / "envs" / "env_robosuite.py"
+    if not path.exists():
+        raise FileNotFoundError("not found: %s" % path)
 
     text = path.read_text()
     if "MUJOCO_EXCEPTIONS" in text:

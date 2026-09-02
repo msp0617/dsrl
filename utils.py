@@ -70,6 +70,7 @@ class LoggingCallback(BaseCallback):
         eval_every_env=None,
         eval_every_env_early=None,
         eval_early_until_env=0,
+        eval_episodes_early=0,
     ):
         super().__init__(verbose)
         self.action_chunk = action_chunk
@@ -98,6 +99,7 @@ class LoggingCallback(BaseCallback):
         self.eval_every_env = int(eval_every_env) if eval_every_env else 0
         self.eval_every_env_early = int(eval_every_env_early or eval_every_env or 0)
         self.eval_early_until_env = int(eval_early_until_env or 0)
+        self.eval_episodes_early = int(eval_episodes_early or 0)
         self.next_eval_at = None
 
     # ------------------------------------------------------------------ csv
@@ -121,6 +123,18 @@ class LoggingCallback(BaseCallback):
         if self.eval_every_env_early and self.total_timesteps < self.eval_early_until_env:
             return self.eval_every_env_early
         return self.eval_every_env
+
+    def episodes_now(self):
+        """Episodes per evaluation, which may be smaller in the dense early phase.
+
+        One evaluation costs eval_episodes x n_eval_envs episodes of simulation,
+        which is a real share of the wall clock when evaluations are frequent.
+        Trading episodes for points is the better deal while resolving the dip:
+        the curve can be smoothed across points afterwards.
+        """
+        if self.eval_episodes_early and self.total_timesteps < self.eval_early_until_env:
+            return self.eval_episodes_early
+        return self.eval_episodes
 
     def arm_eval_schedule(self):
         if self.eval_every_env:
@@ -225,14 +239,15 @@ class LoggingCallback(BaseCallback):
 
     # ----------------------------------------------------------------- eval
     def evaluate(self, agent, deterministic=False):
-        if self.eval_episodes <= 0:
+        episodes = self.episodes_now()
+        if episodes <= 0:
             return
         env = self.eval_env
         with torch.no_grad():
             success, rews = [], []
             rew_total, total_ep = 0, 0
             rew_ep = np.zeros(self.num_eval_env)
-            for i in range(self.eval_episodes):
+            for i in range(episodes):
                 obs = env.reset()
                 success_i = np.zeros(obs.shape[0])
                 r = []
@@ -262,7 +277,7 @@ class LoggingCallback(BaseCallback):
                 "deterministic": int(bool(deterministic)),
                 "success_rate": success_rate,
                 "avg_reward": avg_rew,
-                "episodes": int(self.eval_episodes * self.num_eval_env),
+                "episodes": int(episodes * self.num_eval_env),
             }
             self._csv_append("eval_log.csv", row)
             print(

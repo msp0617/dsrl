@@ -31,14 +31,21 @@ deterministic_eval: False # if true, run eval with both deterministic actions, a
 exp_id: ''
 resume: True
 ckpt_dir: '' # defaults to ${logdir}/checkpoint
-ckpt_every_env_steps: 10000 # rolling checkpoint period, in original-env steps
+# Rolling checkpoint period in original-env steps. One checkpoint is about
+# 640MB (580MB of weights and optimizer state, 60MB of replay buffer) and two
+# slots are kept, so a run holds ~1.3GB. Delete a finished run's checkpoint
+# directory once its CSVs are safe.
+ckpt_every_env_steps: 25000
 save_replay_buffer: True # an off-policy run cannot be resumed without it
 
 # Evaluation schedule in original-environment steps. Dense over the early phase,
 # where the initial dip lives; sparse afterwards.
+# One evaluation runs num_evals episodes of 300 env steps each, so evaluating
+# often is not free. The early phase trades episodes for resolution.
 eval_schedule:
   every_env_early: 5000
   early_until_env: 100000
+  num_evals_early: 100
   every_env: 25000
 
 num_evals: 200
