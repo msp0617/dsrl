@@ -12,10 +12,11 @@ dppo_path: ./dppo
 normalization_path: ./dppo/log/robomimic/${env_name}/normalization.npz
 
 algorithm: dsrl_na # options are: dsrl_na, dsrl_sac
+variant: baseline # baseline | warmup | iql -- offline-to-online study
 
 seed: 1
 device: cuda:0
-use_wandb: True
+use_wandb: False # metrics always go to train_log.csv / eval_log.csv in ${logdir}
 env_name: can
 log_dir: ./logs 
 obs_dim: 23
@@ -25,10 +26,24 @@ act_steps: 4 # action chunk size of base policy
 load_offline_data: False # if true, load offline demonstration data into replay buffer
 deterministic_eval: False # if true, run eval with both deterministic actions, as well as stochastic
 
-eval_interval: 3000
+# Set exp_id to a stable name to make a run resumable: the run then writes to
+# ${log_dir}/${exp_id} instead of a fresh timestamped folder every session.
+exp_id: ''
+resume: True
+ckpt_dir: '' # defaults to ${logdir}/checkpoint
+ckpt_every_env_steps: 10000 # rolling checkpoint period, in original-env steps
+save_replay_buffer: True # an off-policy run cannot be resumed without it
+
+# Evaluation schedule in original-environment steps. Dense over the early phase,
+# where the initial dip lives; sparse afterwards.
+eval_schedule:
+  every_env_early: 5000
+  early_until_env: 100000
+  every_env: 25000
+
 num_evals: 200
-save_model_interval: 10000
-save_replay_buffer: False
+eval_interval: 3000 # only used if eval_schedule is removed (counts callback calls)
+save_model_interval: 10000 # only used if ckpt_every_env_steps is 0
 
 env:
   n_envs:  4
@@ -58,6 +73,12 @@ wandb:
   group: robomimic-can
 
 train:
+  total_env_steps: 300000 # budget in original-env steps, initial rollout included
+  # Buffer slots are buffer_size/n_envs and one slot holds one action chunk per env.
+  # Needs init_rollout_steps + offline_adds + total_env_steps/(act_steps*n_envs) slots.
+  # 200000 -> 50000 slots, about 20000 needed for a 300k-step run, ~60MB per checkpoint.
+  buffer_size: 200000
+  offline_mix_ratio: -1 # >0 fixes the offline share of each sampled batch
   tau: 0.005 # Target update rate
   actor_lr: 3e-4
   batch_size: 256
