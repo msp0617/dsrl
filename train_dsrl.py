@@ -15,7 +15,6 @@ import gym
 
 sys.path.append('./dppo')
 
-from stable_baselines3 import SAC
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 
@@ -27,11 +26,13 @@ from env_utils import (
     make_robomimic_env,
 )
 from o2o_utils import (
-    DSRLResumable,
+    VARIANTS,
     ResumeCheckpointCallback,
+    build_agent,
     check_buffer_capacity,
     check_fingerprint,
     config_fingerprint,
+    load_pretrained_weights,
     read_run_states,
     resolve_ckpt_dir,
     restore_agent,
@@ -88,12 +89,16 @@ def main(cfg: OmegaConf):
 
     num_env = cfg.env.n_envs
 
+    # The variant decides only where the initial critic weights come from:
+    # baseline starts random, warmup and iql load a file from offline_pretrain.py.
     variant = str(cfg.get("variant", "baseline") or "baseline")
-    if variant != "baseline":
-        raise NotImplementedError(
-            "variant=%s is not implemented yet, so this run would silently be another "
-            "baseline. Only variant=baseline is available." % variant
-        )
+    pretrain_path = str(cfg.get("pretrain_path", "") or "")
+    if variant not in VARIANTS:
+        raise ValueError("variant must be one of %s, got %r" % (", ".join(VARIANTS), variant))
+    if variant != "baseline" and not pretrain_path:
+        raise ValueError("variant=%s needs pretrain_path=<file written by offline_pretrain.py>" % variant)
+    if variant != "baseline" and not os.path.exists(pretrain_path):
+        raise FileNotFoundError("pretrain_path does not exist: %s" % pretrain_path)
 
     # A 10M-transition buffer costs several GB and makes checkpointing the
     # buffer impractical; size it to the run instead.
@@ -137,73 +142,12 @@ def main(cfg: OmegaConf):
     if cfg.algorithm == 'dsrl_sac':
         env = DiffusionPolicyEnvWrapper(env, cfg, base_policy)
     env.seed(cfg.seed + 1)
-    post_linear_modules = None
-    if cfg.train.use_layer_norm:
-        post_linear_modules = [torch.nn.LayerNorm]
-
-    net_arch = []
-    for _ in range(cfg.train.num_layers):
-        net_arch.append(cfg.train.layer_size)
-    policy_kwargs = dict(
-        net_arch=dict(pi=net_arch, qf=net_arch),
-        activation_fn=torch.nn.Tanh,
-        log_std_init=0.0,
-        post_linear_modules=post_linear_modules,
-        n_critics=cfg.train.n_critics,
+    model = build_agent(
+        cfg, env, base_policy, buffer_size,
+        replay_buffer_kwargs=replay_buffer_kwargs,
+        tensorboard_log=cfg.logdir,
+        verbose=1,
     )
-
-    if cfg.algorithm == 'dsrl_sac':
-        model = SAC(
-            "MlpPolicy",
-            env,
-            learning_rate=cfg.train.actor_lr,
-            buffer_size=buffer_size,      # Replay buffer size
-            learning_starts=1,    # How many steps before learning starts (total steps for all env combined)
-            batch_size=cfg.train.batch_size,
-            tau=cfg.train.tau,                # Target network update rate
-            gamma=cfg.train.discount,               # Discount factor
-            train_freq=cfg.train.train_freq,             # Update the model every train_freq steps
-            gradient_steps=cfg.train.utd,         # How many gradient steps to do at each update
-            action_noise=None,        # No additional action noise
-            replay_buffer_kwargs=replay_buffer_kwargs,
-            optimize_memory_usage=False,
-            ent_coef="auto" if cfg.train.ent_coef == -1 else cfg.train.ent_coef,          # Automatic entropy tuning
-            target_update_interval=1, # Update target network every interval
-            target_entropy="auto" if cfg.train.target_ent == -1 else cfg.train.target_ent,    # Automatic target entropy
-            use_sde=False,
-            sde_sample_freq=-1,
-            tensorboard_log=cfg.logdir,
-            verbose=1,
-            policy_kwargs=policy_kwargs,
-        )
-    elif cfg.algorithm == 'dsrl_na':
-        model = DSRLResumable(
-            "MlpPolicy",
-            env,
-            learning_rate=cfg.train.actor_lr,
-            buffer_size=buffer_size,      # Replay buffer size
-            learning_starts=1,    # How many steps before learning starts (total steps for all env combined)
-            batch_size=cfg.train.batch_size,
-            tau=cfg.train.tau,                # Target network update rate
-            gamma=cfg.train.discount,               # Discount factor
-            train_freq=cfg.train.train_freq,             # Update the model every train_freq steps
-            gradient_steps=cfg.train.utd,         # How many gradient steps to do at each update
-            action_noise=None,        # No additional action noise
-            replay_buffer_kwargs=replay_buffer_kwargs,
-            optimize_memory_usage=False,
-            ent_coef="auto" if cfg.train.ent_coef == -1 else cfg.train.ent_coef,          # Automatic entropy tuning
-            target_update_interval=1, # Update target network every interval
-            target_entropy="auto" if cfg.train.target_ent == -1 else cfg.train.target_ent,    # Automatic target entropy
-            use_sde=False,
-            sde_sample_freq=-1,
-            tensorboard_log=cfg.logdir,
-            verbose=1,
-            policy_kwargs=policy_kwargs,
-            diffusion_policy=base_policy,
-            diffusion_act_dim=(cfg.act_steps, cfg.action_dim),
-            noise_critic_grad_steps=cfg.train.noise_critic_grad_steps,
-            critic_backup_combine_type=cfg.train.critic_backup_combine_type,
-        )
 
     num_env_eval = cfg.env.n_eval_envs
     eval_env = make_vec_env(make_env, n_envs=num_env_eval, vec_env_cls=SubprocVecEnv)
@@ -278,6 +222,16 @@ def main(cfg: OmegaConf):
             flush=True,
         )
     else:
+        if variant != "baseline":
+            # Loaded before the first evaluation so that the step-0 point in the
+            # curve measures the policy this run actually starts from.
+            meta, loaded = load_pretrained_weights(model, pretrain_path, cfg, variant)
+            print(
+                "[pretrain] %s: loaded %s from %s (%s steps on %s)"
+                % (variant, ", ".join(loaded), pretrain_path, meta.get("steps"), meta.get("offline_data_path")),
+                flush=True,
+            )
+
         logging_callback.evaluate(model, deterministic=False)
         if cfg.deterministic_eval:
             logging_callback.evaluate(model, deterministic=True)

@@ -89,6 +89,44 @@ python train_dsrl.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \
 
 Re-running the same command after a session dies picks up where it stopped.
 
+## Variants
+
+`variant` changes one thing: where the initial critic weights come from.
+
+| variant | Q_A, Q_W at step 0 | actor at step 0 |
+|---|---|---|
+| `baseline` | random (upstream DSRL-NA) | random |
+| `warmup` | DSRL's own update run on the offline data for `pretrain.steps` | trained alongside, loaded |
+| `iql` | IQL on the offline data, then distilled into Q_W | random (unless `pretrain.actor_steps > 0`) |
+
+Both pretrained variants are produced by `offline_pretrain.py`, which needs no
+simulator: the agent is built on `SpacesOnlyEnv`, which carries the task's
+spaces and nothing else, and the diffusion policy only needs torch. It runs on
+any GPU and its output is reused by every seed of the online run.
+
+```bash
+python offline_pretrain.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \
+  pretrain.method=iql seed=1 offline_data_path=<chunked npz>
+python train_dsrl.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \
+  variant=iql pretrain_path=<the .pt above> exp_id=can_iql_s1 seed=1
+```
+
+The difference the study is after sits in the Q_A target. Warm-up uses DSRL's
+own, `r + γ Q̄_A(s', π_dp(s', π_W(s')))`, which leans on an actor that is
+random at that point. IQL fits `V(s)` by expectile regression to `Q_A(s, a)` on
+actions present in the data and uses `r + γ V(s')`: no actor, nothing queried
+outside the data. Distillation into Q_W is then the online loop's own
+`update_noise_critic`, unchanged.
+
+Whether the offline data also stays in the online replay buffer is a separate
+switch, `load_offline_data`, deliberately independent of the variant so that
+the critic-initialisation effect can be measured on its own.
+
+The `.pt` carries a `meta` block with the method and the network fingerprint;
+a file made for another variant or another network shape is refused on load,
+and the run fingerprint includes the variant so a baseline checkpoint cannot be
+resumed as an iql run.
+
 ## Offline data
 
 The config points `offline_data_path` at `can_test/train_offline.npz`, which the

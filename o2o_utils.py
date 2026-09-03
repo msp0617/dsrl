@@ -18,12 +18,16 @@ import random
 import time
 import zipfile
 
+import gymnasium
 import numpy as np
 import torch as th
+from gymnasium import spaces
 
-from stable_baselines3 import DSRL
+from stable_baselines3 import DSRL, SAC
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.save_util import load_from_zip_file, recursive_setattr
+
+VARIANTS = ("baseline", "warmup", "iql")
 
 STATE_FILE = "run_state.json"
 SLOTS = ("a", "b")
@@ -51,25 +55,35 @@ class DSRLResumable(DSRL):
 
 # --------------------------------------------------------------- config check
 
-def config_fingerprint(cfg):
-    """The settings a checkpoint cannot be reinterpreted under.
-
-    Network shape decides whether the weights even load; the action chunk,
-    number of envs and buffer size decide what the saved replay buffer means.
-    """
+def network_fingerprint(cfg):
+    """What decides whether saved weights fit this run's networks at all."""
     return {
         "algorithm": str(cfg.algorithm),
         "env_name": str(cfg.env_name),
         "obs_dim": int(cfg.obs_dim),
         "action_dim": int(cfg.action_dim),
         "act_steps": int(cfg.act_steps),
-        "n_envs": int(cfg.env.n_envs),
         "layer_size": int(cfg.train.layer_size),
         "num_layers": int(cfg.train.num_layers),
         "n_critics": int(cfg.train.n_critics),
         "use_layer_norm": bool(cfg.train.use_layer_norm),
-        "buffer_size": int(cfg.train.get("buffer_size", 0)),
     }
+
+
+def config_fingerprint(cfg):
+    """The settings a run checkpoint cannot be reinterpreted under.
+
+    On top of the network shape: the number of envs and the buffer size decide
+    what the saved replay buffer means, and the variant decides which
+    experiment the run belongs to.
+    """
+    fingerprint = network_fingerprint(cfg)
+    fingerprint.update({
+        "n_envs": int(cfg.env.n_envs),
+        "buffer_size": int(cfg.train.get("buffer_size", 0)),
+        "variant": str(cfg.get("variant", "baseline") or "baseline"),
+    })
+    return fingerprint
 
 
 def check_fingerprint(state, cfg):
@@ -123,6 +137,128 @@ def check_buffer_capacity(cfg, buffer_size):
             "[buffer] warning: %d of %d slots will be used, little headroom" % (needed, slots),
             flush=True,
         )
+
+
+# ------------------------------------------------------------ agent building
+
+def build_agent(cfg, env, base_policy, buffer_size, replay_buffer_kwargs=None,
+                tensorboard_log=None, verbose=1):
+    """The one place the networks are shaped.
+
+    Both the online run and the offline pre-training build their agent here, so
+    weights saved by one always fit the other.
+    """
+    post_linear_modules = [th.nn.LayerNorm] if cfg.train.use_layer_norm else None
+    net_arch = [int(cfg.train.layer_size)] * int(cfg.train.num_layers)
+    policy_kwargs = dict(
+        net_arch=dict(pi=net_arch, qf=net_arch),
+        activation_fn=th.nn.Tanh,
+        log_std_init=0.0,
+        post_linear_modules=post_linear_modules,
+        n_critics=cfg.train.n_critics,
+    )
+    common = dict(
+        learning_rate=cfg.train.actor_lr,
+        buffer_size=int(buffer_size),
+        learning_starts=1,
+        batch_size=cfg.train.batch_size,
+        tau=cfg.train.tau,
+        gamma=cfg.train.discount,
+        train_freq=cfg.train.train_freq,
+        gradient_steps=cfg.train.utd,
+        action_noise=None,
+        replay_buffer_kwargs=replay_buffer_kwargs,
+        optimize_memory_usage=False,
+        ent_coef="auto" if cfg.train.ent_coef == -1 else cfg.train.ent_coef,
+        target_update_interval=1,
+        target_entropy="auto" if cfg.train.target_ent == -1 else cfg.train.target_ent,
+        use_sde=False,
+        sde_sample_freq=-1,
+        tensorboard_log=tensorboard_log,
+        verbose=verbose,
+        policy_kwargs=policy_kwargs,
+    )
+    if cfg.algorithm == "dsrl_sac":
+        return SAC("MlpPolicy", env, **common)
+    if cfg.algorithm == "dsrl_na":
+        return DSRLResumable(
+            "MlpPolicy",
+            env,
+            diffusion_policy=base_policy,
+            diffusion_act_dim=(cfg.act_steps, cfg.action_dim),
+            noise_critic_grad_steps=cfg.train.noise_critic_grad_steps,
+            critic_backup_combine_type=cfg.train.critic_backup_combine_type,
+            **common,
+        )
+    raise ValueError("unknown algorithm %r" % cfg.algorithm)
+
+
+class SpacesOnlyEnv(gymnasium.Env):
+    """Carries the task's observation and action spaces and nothing else.
+
+    Stable-Baselines3 needs an env to shape its networks and replay buffer.
+    Offline pre-training never steps one, so this stands in for the robosuite
+    env and lets the offline stage run without mujoco.
+    """
+
+    metadata = {}
+
+    def __init__(self, obs_dim, action_dim):
+        self.observation_space = spaces.Box(
+            low=-np.ones(obs_dim, dtype=np.float32), high=np.ones(obs_dim, dtype=np.float32), dtype=np.float32
+        )
+        self.action_space = spaces.Box(
+            low=-np.ones(action_dim, dtype=np.float32), high=np.ones(action_dim, dtype=np.float32), dtype=np.float32
+        )
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        return np.zeros(self.observation_space.shape, dtype=np.float32), {}
+
+    def step(self, action):
+        raise RuntimeError("SpacesOnlyEnv cannot be stepped; it only exists to build the agent offline")
+
+
+# --------------------------------------------------------- pretrained weights
+
+def check_pretrain_meta(meta, cfg, variant):
+    """Refuse weights that were made for another variant or another network."""
+    method = meta.get("method")
+    if method != variant:
+        raise RuntimeError(
+            "pretrain_path holds %r weights but this run is variant=%s" % (method, variant)
+        )
+    saved = meta.get("network") or {}
+    current = network_fingerprint(cfg)
+    mismatch = {k: (saved[k], v) for k, v in current.items() if k in saved and saved[k] != v}
+    if mismatch:
+        lines = ["  %s: pretrained %r, config %r" % (k, a, b) for k, (a, b) in sorted(mismatch.items())]
+        raise RuntimeError("The pretrained weights do not fit this run's networks:\n%s" % "\n".join(lines))
+
+
+def load_pretrained_weights(model, path, cfg, variant):
+    """Copy offline-pretrained networks into a freshly built agent.
+
+    Everything the file carries is loaded: the critics always, the actor and
+    the entropy coefficient only when the offline stage trained them. The
+    optimizers start fresh, as they would for any newly initialised network.
+    """
+    payload = th.load(path, map_location=model.device, weights_only=False)
+    meta = payload.get("meta") or {}
+    check_pretrain_meta(meta, cfg, variant)
+
+    loaded = []
+    for name in ("critic", "critic_target", "critic_noise", "actor"):
+        if name in payload:
+            getattr(model, name).load_state_dict(payload[name])
+            loaded.append(name)
+    if "critic" in loaded and "critic_target" not in loaded:
+        model.critic_target.load_state_dict(model.critic.state_dict())
+        loaded.append("critic_target<-critic")
+    if "log_ent_coef" in payload and getattr(model, "log_ent_coef", None) is not None:
+        model.log_ent_coef.data.copy_(payload["log_ent_coef"].to(model.device))
+        loaded.append("log_ent_coef")
+    return meta, loaded
 
 
 # ------------------------------------------------------------- reading state

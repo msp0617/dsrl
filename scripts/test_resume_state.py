@@ -41,8 +41,12 @@ def install_stubs():
         def _get_torch_save_params(self):
             return ["policy", "critic_noise"], ["log_ent_coef"]
 
+    class SAC:
+        pass
+
     sb3 = types.ModuleType("stable_baselines3")
     sb3.DSRL = DSRL
+    sb3.SAC = SAC
     common = types.ModuleType("stable_baselines3.common")
     callbacks = types.ModuleType("stable_baselines3.common.callbacks")
     callbacks.BaseCallback = BaseCallback
@@ -234,6 +238,37 @@ def test_buffer_capacity_check():
         pass
     else:
         raise AssertionError("fewer envs means more slots are needed, not fewer")
+
+
+def test_pretrain_meta_checks():
+    cfg = make_cfg()
+    meta = {"method": "iql", "network": o2o_utils.network_fingerprint(cfg)}
+    o2o_utils.check_pretrain_meta(meta, cfg, "iql")
+
+    try:
+        o2o_utils.check_pretrain_meta(meta, cfg, "warmup")
+    except RuntimeError as exc:
+        assert "iql" in str(exc) and "warmup" in str(exc)
+    else:
+        raise AssertionError("iql weights must not be loaded into a warmup run")
+
+    try:
+        o2o_utils.check_pretrain_meta(meta, make_cfg(layer_size=512), "iql")
+    except RuntimeError as exc:
+        assert "layer_size" in str(exc)
+    else:
+        raise AssertionError("weights for another network shape must be refused")
+
+    # n_envs is a run property, not a network property: pretraining used one env
+    o2o_utils.check_pretrain_meta(meta, make_cfg(n_envs=1), "iql")
+
+
+def test_run_fingerprint_includes_variant():
+    baseline = o2o_utils.config_fingerprint(make_cfg())
+    assert baseline["variant"] == "baseline"
+    cfg = make_cfg()
+    cfg["variant"] = "iql"
+    assert o2o_utils.config_fingerprint(cfg)["variant"] == "iql"
 
 
 def test_unreadable_state_file_is_not_a_crash():
