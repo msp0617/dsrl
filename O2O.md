@@ -131,18 +131,32 @@ resumed as an iql run.
 
 The config points `offline_data_path` at `can_test/train_offline.npz`, which the
 authors did not publish. What is published is `robomimic/can/train.npz`, the
-DPPO-processed Multi-Human demonstrations, one row per environment step.
-`scripts/make_offline_chunks.py` regroups those into the chunked rows the replay
-buffer stores:
+DPPO-processed Multi-Human demonstrations, and it carries no rewards: it only
+ever served diffusion-policy pre-training. The rewards come from robomimic's
+own `low_dim_v141.hdf5` for can/mh (300 demonstrations by six operators, sparse
+reward of 1 per step while the can is in the bin).
+
+`scripts/make_offline_chunks.py` reads that hdf5, normalises observations and
+actions with the published `normalization.npz`, the same statistics the online
+environment wrapper applies, and regroups the steps into the chunked rows the
+replay buffer stores. `--check_against` compares the rebuilt states with the
+published `train.npz` and refuses to continue unless they agree to floating
+point precision, which is the proof that offline and online critics see the
+same input space.
 
 ```bash
+python -m robomimic.scripts.download_datasets --tasks can --dataset_types mh \
+  --hdf5_types low_dim --download_dir <dir>
 python scripts/make_offline_chunks.py \
-  --load_path dppo/log/robomimic/can/train.npz \
+  --load_path <dir>/can/mh/low_dim_v141.hdf5 \
+  --normalization_path dppo/log/robomimic/can/normalization.npz \
+  --check_against dppo/log/robomimic/can/train.npz \
   --save_path dppo/log/robomimic/can/train_offline.npz
 ```
 
-`python scripts/test_make_offline_chunks.py` checks the regrouping without
-needing mujoco or torch.
+The output also carries a per-transition operator-quality label (worse / okay /
+better, from the hdf5 masks) for a later data-quality split; the buffer loader
+ignores extra keys.
 
 ## Checks
 
