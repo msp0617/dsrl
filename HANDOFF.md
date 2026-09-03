@@ -201,6 +201,21 @@ claude
 # 첫 메시지: "HANDOFF.md 읽고 이어서 작업 준비해"
 ```
 
+Windows(PowerShell)라면 같은 순서를 이렇게. Claude Code를 WSL에 깔았다면 WSL에서 위 bash 명령 그대로.
+
+```powershell
+gh auth login
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+git clone --recurse-submodules -b o2o https://github.com/msp0617/dsrl.git
+cd dsrl
+git remote add upstream https://github.com/ajwagen/dsrl.git
+python -m venv .venv            # python이 없으면 py
+.venv\Scripts\pip install numpy gymnasium pyyaml h5py
+.venv\Scripts\python scripts\test_resume_state.py
+.venv\Scripts\python scripts\test_make_offline_chunks.py
+claude
+```
+
 - `.venv/`는 `.gitignore`에 넣어둠. 커밋하지 말 것.
 - 코드 수정은 **커밋 + `git push origin o2o`** 해야 Colab에 반영된다. Colab은 클론으로 받는다.
   이미 열린 Colab 세션은 `!cd /content/dsrl && git pull origin o2o`.
