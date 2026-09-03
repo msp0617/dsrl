@@ -133,7 +133,10 @@ class LoggingCallback(BaseCallback):
         the curve can be smoothed across points afterwards.
         """
         if self.eval_episodes_early and self.total_timesteps < self.eval_early_until_env:
-            return self.eval_episodes_early
+            # "fewer episodes, more points": the early count is a reduction of
+            # the regular one, never an increase (a smoke test with num_evals=1
+            # must not run a hundred episodes because of the early default).
+            return min(self.eval_episodes_early, self.eval_episodes)
         return self.eval_episodes
 
     def arm_eval_schedule(self):
