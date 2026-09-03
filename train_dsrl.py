@@ -225,7 +225,9 @@ def main(cfg: OmegaConf):
         if variant != "baseline":
             # Loaded before the first evaluation so that the step-0 point in the
             # curve measures the policy this run actually starts from.
-            meta, loaded = load_pretrained_weights(model, pretrain_path, cfg, variant)
+            pretrain_cfg = cfg.get("pretrain", None)
+            load_ent_coef = bool(pretrain_cfg.get("load_ent_coef", False)) if pretrain_cfg else False
+            meta, loaded = load_pretrained_weights(model, pretrain_path, cfg, variant, load_ent_coef=load_ent_coef)
             print(
                 "[pretrain] %s: loaded %s from %s (%s steps on %s)"
                 % (variant, ", ".join(loaded), pretrain_path, meta.get("steps"), meta.get("offline_data_path")),

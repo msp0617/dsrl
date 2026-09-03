@@ -32,7 +32,7 @@ DSRL은 학습된 diffusion policy π_dp를 고정하고, π_dp에 넣을 초기
 | variant | Q_A, Q_W 시작값 | actor 시작값 |
 |---|---|---|
 | baseline | 무작위 | 무작위 |
-| warmup | 데모로 DSRL 자신의 업데이트(Algorithm 1)를 k번 | 같이 학습된 것 로드 |
+| warmup | 데모로 DSRL 자신의 업데이트(Algorithm 1)를 k번 | 같이 학습된 것 로드 (α는 `pretrain.load_ent_coef=True`일 때만) |
 | iql | 데모로 IQL k번 → Q_W로 증류 | 무작위 (옵션 `pretrain.actor_steps`) |
 
 **논지의 핵심**: warmup의 Q_A 타깃은 `r + γ Q̄_A(s', π_dp(s', π_W(s')))`로 **무작위 actor에 의존**한다.
@@ -62,9 +62,8 @@ Q_W는 오프라인 데이터에 w 라벨이 없어 직접 IQL 불가 → Q_A �
 4. 분석 (섹션 7)
 
 ### 진행 중이던 것
-- `offline_pretrain.py`에 대한 다각도 정적 검토(IQL 수식 부호, 액션 공간, 로드 경로, 실험 설계 교란)를
-  돌리다가 API 장애로 실패, 재시도 중이었다. 집에서 이어갈 때는 섹션 8의 체크리스트로 대신 검토하거나
-  같은 검토를 다시 요청하면 된다. **검토 통과 전에는 50k 사전학습을 돌리지 말 것.**
+- `offline_pretrain.py` 정적 검토는 2026-09-03 집 데스크톱에서 완료(섹션 8). 버그 없음.
+  설계 교란 2개(α 로드 여부, 증류 스텝 수)는 config·코드에 반영했다. 50k 사전학습을 돌려도 된다.
 
 ---
 
@@ -142,7 +141,7 @@ run 이름 규칙: `can_{variant}_s{seed}`. 결과는 `$PROJ/logs/<exp_id>/eval_
 
 1. **A100 처리량**: `throughput.py` 출력의 `env steps/s`. 300k run 한 개 시간 × 9 ÷ 병렬 세션 수가
    크레딧 만료(약 2026-09-09) 안에 들어와야 한다. 안 들어오면 `total_env_steps` 절단(초기 dip은 20만 안쪽) 또는 시드 2개.
-2. **사전학습 검토** (섹션 8) 통과 후 **50k 사전학습** iql·warmup × seed {1,2,3}. GPU 아무거나. 30분/개.
+2. **50k 사전학습** iql·warmup × seed {1,2,3}. GPU 아무거나. 30분/개.
 3. **baseline seed 1 먼저** 띄워서 초기 dip이 실제로 보이는지 확인. 논문 Fig. 4의 Can 곡선처럼
    step 0 성공률 아래로 떨어졌다 회복하면 실험이 의미 있다. **dip이 안 보이면 멈추고 재설계**
    (예: b_W 대신 Q_W/actor 범위 불일치, utd, 초기 rollout 크기가 원인 후보).
@@ -166,16 +165,32 @@ warmup은 actor·엔트로피 계수도 로드하고 iql은 안 한다(정의상
 
 ---
 
-## 8. `offline_pretrain.py` 검토 체크리스트 (미완)
+## 8. `offline_pretrain.py` 정적 검토 결과 (2026-09-03, 집 데스크톱에서 완료)
 
-실행은 되지만 **조용히 틀리는 종류**를 아직 못 봤다. 새 세션에서 검토할 것:
-- `expectile_loss`: u = Q − V, 가중치 |τ − 1{u<0}|, τ=0.7이면 Q>V 샘플이 더 무거워 V가 위로 끌리는 방향이 맞는가
-- V 회귀 타깃이 **target critic의 min**인가, Q 타깃 `r + γ(1−d)V(s')`에서 V가 detach되는가, 보상 스케일·γ가 온라인(`dsrl.py:273-295`)과 같은가
-- `run_distill`의 `model.update_noise_critic` 재사용: obs (B,23) 텐서 device, `scale_action` 항등, w 분포
-- `load_pretrained_weights`: 오프라인(n_envs=1)과 온라인(n_envs=4) 네트워크의 state_dict 키·shape 일치, `critic_target` 처리, `log_ent_coef` 복사, 로드가 **fresh run에서만, step-0 평가 전에** 일어나는지, 이후 어디서도 critic이 재초기화되지 않는지
-- 실험 설계 교란: 섹션 7의 목록 외에 더 있는가
+실행 경로 전부를 코드로 따라가 봤다. **조용히 틀리는 버그는 못 찾았다.** 50k 사전학습을 막을 이유는 없다.
+단, 아래 "설계 교란" 두 개는 실험 시작 전에 결정이 필요하다.
 
----
+### 통과한 항목
+- `expectile_loss`: u = Q − V, 가중치 |τ − 1{u<0}|. τ=0.7이면 Q>V 샘플 가중치 0.7, Q<V는 0.3 → V가 위로 끌림. IQL 논문 식과 동일.
+- V 타깃은 `critic_target`의 min(온라인 `critic_backup_combine_type`과 같은 결합). Q 타깃 `r + γ(1−d)V(s')`는 `no_grad` 안에서 계산되어 detach됨. 보상·γ·τ(polyak)·lr·손실 계수(0.5·Σmse) 전부 온라인 `dsrl.py:273-302`와 같음.
+- 보상/종료 일관성: 온라인 청크 보상 = Σ(r−1) 4스텝 (`env_utils.py:84,177`) = 오프라인 `sum − 4·offset`. 온라인 done은 300스텝 시간제한뿐이고(`robomimic_lowdim.py:138`은 항상 False) `TimeLimit.truncated`를 안 넣어 terminal로 저장됨. 성공 후 shifted 보상이 0이므로 데모 끝 terminal(=0 부트스트랩)과 값이 일치.
+- `run_distill`: 버퍼 샘플은 `to_torch`로 model.device에 올라옴. `scale_action`은 `[-1,1]^28`에서 항등(SpacesOnlyEnv, ActionChunkWrapper 둘 다). w ~ N(0,I) 무클리핑, 확산정책도 `cond["noise_action"]`을 그대로 씀(`diffusion.py:287`) → 온라인 `update_noise_critic`과 완전히 같은 경로.
+- `load_pretrained_weights`: 네트워크 모양은 obs 23·action 28 차원에만 의존하므로 n_envs 1↔4 무관. state_dict 키는 같은 클래스라 일치. `critic_target`은 파일 것을 로드. `log_ent_coef`는 파일에 있을 때만(warmup) `.data.copy_`로 복사해 optimizer 파라미터 identity 유지. 로드는 `train_dsrl.py:225-233`의 fresh-run 분기, `evaluate` 직전에만 일어나고, 이후 `collect_rollouts`·`learn()`은 가중치를 건드리지 않음. resume 시엔 체크포인트 가중치가 우선(정상).
+- `run_warmup`: `model.train()`이 쓰는 `_vec_normalize_env`·`logger`·`_current_progress_remaining` 전부 준비돼 있음. α도 같이 학습되고 저장됨.
+- 오프라인 청크는 stride 1(겹침). MDP는 청크 단위(s_t, a_{t:t+4}, s_{t+4})로 같으므로 편향 없음.
+
+### 설계 교란 (결정 필요)
+1. **엔트로피 계수 α.** `ent_coef=auto`라 α=1.0에서 시작, `target_ent=0.0`. 28차원 squashed Gaussian의 초기 log π ≈ −18 nats라
+   (a) 처음 수천 그래디언트 스텝 동안 actor 손실 `α·log π − Q_W`는 무작위 Q_W(크기 ~0.1)가 아니라 엔트로피 항이 지배 → π_W가 [-1,1]^28 균등분포 쪽으로 퍼짐. **이것 자체가 dip 후보 메커니즘**이고 critic 초기화와 무관하다.
+   (b) critic 타깃에도 `−α·log π ≈ +18/청크`가 더해져 IQL의 hard Q(범위 [−400,0])와 스케일이 안 맞음. 상태만의 함수라 w에 대한 순위는 보존되지만 절대값은 수천 스텝 안에 덮어써진다.
+   (c) α는 Adam으로 log α가 스텝당 3e-4씩 내려가 학습 시작 후 약 1만 env step이면 α≈0.02. **warmup은 이미 내려간 α를 로드하고 iql·baseline은 α=1에서 시작** → warmup이 좋게 나오면 critic 때문인지 α 때문인지 구분 못 함.
+   → **반영함**: `pretrain.load_ent_coef`(기본 False)를 추가해 세 변형 모두 α=1에서 시작. α 궤적은 `train_log.csv`의 `ent_coef` 열에 있으니 분석 때 같이 볼 것.
+2. **증류 스텝 수.** warmup은 `steps/utd × noise_critic_grad_steps` = 50000/20×10 = 25,000 증류 스텝, iql은 20,000이었다. → **반영함**: `pretrain.distill_steps=25000`.
+
+### 참고 (버그 아님)
+- `standard_gauss_init`은 `build_agent`가 안 넘겨 False. `log_std_init=0.0`은 gSDE 전용이라 무시됨. step-0 actor는 순수 무작위(mean·log_std 모두 Linear 기본 초기화, log_std clamp [−20,2]).
+- 오프라인 단계에서 `hydra.run.dir=${logdir}` 때문에 `logs/robomimic-dsrl/<타임스탬프>/.hydra/`가 생김. 무해.
+- 로컬(집)에는 `dppo/log/` 체크포인트가 없어 `offline_pretrain.py`를 돌려볼 수 없다. 실행 검증은 Colab에서 이미 됨(200스텝).
 
 ## 9. 집 데스크톱 세팅
 

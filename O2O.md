@@ -96,7 +96,7 @@ Re-running the same command after a session dies picks up where it stopped.
 | variant | Q_A, Q_W at step 0 | actor at step 0 |
 |---|---|---|
 | `baseline` | random (upstream DSRL-NA) | random |
-| `warmup` | DSRL's own update run on the offline data for `pretrain.steps` | trained alongside, loaded |
+| `warmup` | DSRL's own update run on the offline data for `pretrain.steps` | trained alongside, loaded (entropy coefficient only with `pretrain.load_ent_coef`) |
 | `iql` | IQL on the offline data, then distilled into Q_W | random (unless `pretrain.actor_steps > 0`) |
 
 Both pretrained variants are produced by `offline_pretrain.py`, which needs no
@@ -117,6 +117,13 @@ random at that point. IQL fits `V(s)` by expectile regression to `Q_A(s, a)` on
 actions present in the data and uses `r + γ V(s')`: no actor, nothing queried
 outside the data. Distillation into Q_W is then the online loop's own
 `update_noise_critic`, unchanged.
+
+The warm-up stage also anneals the entropy coefficient, and DSRL's initial
+alpha of 1 with a target entropy of 0 dominates the first few thousand actor
+updates. Loading the annealed value would hand warm-up a head start unrelated to
+the critic, so it is off unless `pretrain.load_ent_coef=True`; every variant
+then goes online with the same alpha. For the same reason `distill_steps`
+matches the number of distillation steps warm-up performs as a side effect.
 
 Whether the offline data also stays in the online replay buffer is a separate
 switch, `load_offline_data`, deliberately independent of the variant so that

@@ -236,12 +236,14 @@ def check_pretrain_meta(meta, cfg, variant):
         raise RuntimeError("The pretrained weights do not fit this run's networks:\n%s" % "\n".join(lines))
 
 
-def load_pretrained_weights(model, path, cfg, variant):
+def load_pretrained_weights(model, path, cfg, variant, load_ent_coef=False):
     """Copy offline-pretrained networks into a freshly built agent.
 
-    Everything the file carries is loaded: the critics always, the actor and
-    the entropy coefficient only when the offline stage trained them. The
-    optimizers start fresh, as they would for any newly initialised network.
+    The critics are always loaded, the actor when the offline stage trained it.
+    The entropy coefficient is loaded only when ``load_ent_coef`` is set: the
+    warm-up stage anneals it, and starting online with an already small alpha
+    is an advantage that has nothing to do with the critic. The optimizers
+    start fresh, as they would for any newly initialised network.
     """
     payload = th.load(path, map_location=model.device, weights_only=False)
     meta = payload.get("meta") or {}
@@ -255,7 +257,7 @@ def load_pretrained_weights(model, path, cfg, variant):
     if "critic" in loaded and "critic_target" not in loaded:
         model.critic_target.load_state_dict(model.critic.state_dict())
         loaded.append("critic_target<-critic")
-    if "log_ent_coef" in payload and getattr(model, "log_ent_coef", None) is not None:
+    if load_ent_coef and "log_ent_coef" in payload and getattr(model, "log_ent_coef", None) is not None:
         model.log_ent_coef.data.copy_(payload["log_ent_coef"].to(model.device))
         loaded.append("log_ent_coef")
     return meta, loaded
