@@ -71,7 +71,10 @@ critic 초기화가 dip을 줄이면 "Q_W 크기가 엔트로피 항을 이겨�
   9개 동시일 때 run당 약 7 env step/s. 오후에 유휴 판정으로 VM이 한 번 죽어 21:30에 체크포인트에서 resume함
   (baseline s1 199k, iql s1 149k, warmup s1·s2 124k, 나머지 99k). 예상 종료: seed 1 새벽 1~4시, seed 2·3 아침 6~7시.
 - **VM 2** (G4, 노트북 사본): `can_fixalpha_s1`(100k) + `can_mix_prefill_s{1,2,3}`, `can_mix_fixed_s{1,2,3}`, `can_iql_linear_s1`(200k). 8개, RAM 138GB. 예상 종료 아침 5~6시.
-- 두 VM 모두 **keepalive 셀**(섹션 3) 실행 중. 잔여 크레딧 22:00 기준 약 580, 두 VM 시간당 18.
+- **VM 3** (G4, GitHub 노트북, 23:20 KST 시작): `can_baseline_s{4,5}`, `can_iql_s{4,5}`, `can_fixalpha_s{2,3}`, `can_warmupc_s{1,2,3}` 9개, 전부 150k(섹션 14). 사전학습 `iql_can_s{4,5}.pt` 생성 완료.
+  warmupc step-0 = 0.69/0.52/0.30으로 같은 seed의 baseline(0.66/0.50/0.34)과 일치 → **warmup 붕괴는 actor 때문**임이 여기서 확인됨. 예상 종료 새벽 5시.
+- 환경 캐시 `$PROJ/env_cache/dsrl_env.tar.gz`는 VM 3에서 완전한 설치(robomimic·torch 2.7.1 포함) 후 다시 저장함(약 5GB). 첫 저장본(3.0GB)은 설치가 덜 된 상태라 덮어씀.
+- 세 VM 모두 **keepalive 셀**(섹션 3) 실행 중. 잔여 크레딧 23:00 기준 약 550, 세 VM 시간당 27. 아침까지 약 200 사용 예상.
 - 아직 안 띄운 것: `can_mix_linear_s{1,2,3}` (VM 1 본학습이 끝나 RAM이 비면), π_dp 기준선(`eval_base_policy.py`), 선택 조건 `can_warmupc_s{1,2,3}`.
 
 ### 지금까지 관찰 (seed 1, 점당 ±5%p 이상의 노이즈)
