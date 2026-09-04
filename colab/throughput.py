@@ -31,12 +31,36 @@ def read_rows(path):
     return parsed
 
 
+def last_segment(rows):
+    """Rows after the last resume.
+
+    A run that died and was resumed leaves a wall-clock gap of hours between
+    two neighbouring rows, and the step counter drops back to the checkpoint.
+    Either would swamp the rate, so only the rows after the last such break
+    are measured.
+    """
+    if len(rows) < 3:
+        return rows
+    gaps = sorted(b[0] - a[0] for a, b in zip(rows, rows[1:]))
+    typical = gaps[len(gaps) // 2]
+    start = 0
+    for i, (a, b) in enumerate(zip(rows, rows[1:]), start=1):
+        if b[1] <= a[1] or b[0] - a[0] > max(5 * typical, 600):
+            start = i
+    return rows[start:]
+
+
 def summarize(rows, target, warmup, act_steps=4):
     if len(rows) < warmup + 2:
         raise SystemExit(
             "need at least %d rows to measure, found %d" % (warmup + 2, len(rows))
         )
-    rows = rows[warmup:]
+    segment = last_segment(rows)
+    if len(segment) < len(rows):
+        print("resumed run: measuring the %d rows after the last restart" % len(segment))
+    rows = segment[warmup:] if len(segment) > warmup + 1 else segment
+    if len(rows) < 2:
+        raise SystemExit("need at least 2 rows after the last restart, found %d" % len(rows))
     elapsed = rows[-1][0] - rows[0][0]
     steps = rows[-1][1] - rows[0][1]
     if elapsed <= 0 or steps <= 0:
