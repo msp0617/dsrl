@@ -95,6 +95,9 @@ def run_metrics(ev, dip_until=100000, final_points=3):
         trapezoid = getattr(np, "trapezoid", None) or np.trapz
         out["auc_window"] = float(trapezoid(ys, xs) / (xs[-1] - xs[0])) if len(xs) > 1 else np.nan
     out["final"] = float(np.mean(y[-final_points:])) if len(y) else np.nan
+    # a point every run reaches, so groups with different budgets stay comparable
+    if len(x) > 1 and x[-1] >= 150000:
+        out["at_150k"] = float(np.interp(150000, x, y))
     if "mc_return" in ev and ev.mc_return.notna().any():
         out["mc_return_first"] = float(ev.mc_return.dropna().iloc[0])
     if "q_start" in ev and ev.q_start.notna().any():
@@ -139,7 +142,8 @@ def plot_success(ax, runs, groups, reference=None, smooth=0):
         if smooth > 1:
             k = np.ones(smooth) / smooth
             m = np.convolve(m, k, mode="same")
-        ax.plot(x, m, label="%s (n=%d)" % (g, max(n)))
+        n_label = "n=%d" % max(n) if min(n) == max(n) else "n=%d-%d" % (min(n), max(n))
+        ax.plot(x, m, label="%s (%s)" % (g, n_label))
         ax.fill_between(x, m - se, m + se, alpha=0.2)
     if reference is not None:
         ax.axhline(reference[0], color="k", ls="--", lw=1, label="pi_dp, N(0,I) noise")
@@ -227,7 +231,7 @@ def main():
             rows.append(m)
             per_seed.append(m)
         agg = {"group": g, "seed": "mean", "run": "n=%d" % len(per_seed)}
-        for key in ("step0", "min_in_window", "dip_depth", "recovery_at", "auc_window", "final",
+        for key in ("step0", "min_in_window", "dip_depth", "recovery_at", "auc_window", "at_150k", "final",
                     "mc_return_first", "q_start_first"):
             vals = [m[key] for m in per_seed if key in m and np.isfinite(m[key])]
             agg[key] = float(np.mean(vals)) if vals else np.nan

@@ -385,5 +385,83 @@ prior 이탈은 크기가 아니라 **분포가 좁아지고 ±1에 포화**하�
 - 선택: warmup critic-only `can_warmupc_s{1,2,3}`(섹션 2의 `pretrain.load_actor=False`), π_dp 기준선 `scripts/eval_base_policy.py`.
 
 ### 분석 (일요일)
-`python scripts/plot_results.py --logs $PROJ/logs --out $PROJ/figures`. 축은 `--axes "critic=baseline,warmup,iql,fixalpha;mix=baseline,mix_prefill,mix_fixed,mix_linear,iql_linear"`.
+`python scripts/plot_results.py --logs $PROJ/logs --out $PROJ/figures`. 기본 축이 `critic=baseline,warmup,iql,warmupc,fixalpha`, `mix=baseline,mix_prefill,mix_fixed,mix_linear,iql_linear`라 `--axes` 없이 되고, 바꾸려면 `--axes "critic=...;mix=..."`.
+
+---
+
+## 14. VM 3 (2026-09-04 밤, HANDOFF_VM3.md 검증 결과)
+
+seed 1 결과로 헤드라인을 "actor를 로드하면 무너지고 critic만 로드하면 회복이 빨라진다"로 옮김. 이를 위해 VM 3에서 9 run(150k):
+`can_baseline_s{4,5}`, `can_iql_s{4,5}`(사전학습 s4·s5 필요), `can_fixalpha_s{2,3}`, `can_warmupc_s{1,2,3}`.
+
+### 검증한 것 (코드 기준)
+- 사전학습 출력 경로: `offline_pretrain.py`는 `${log_dir}/pretrain/{method}_{env}_s{seed}.pt`와 `_log.csv`에 쓴다 → `iql_can_s4.pt`, `iql_can_s5.pt`. iql만 필요(warmup 사전학습 불필요).
+- `pretrain.load_actor`(기본 True), `pretrain.load_ent_coef`(기본 False)는 config 키. warmupc = `variant=warmup pretrain.load_actor=False` → 로그에 `loaded critic, critic_target, critic_noise`만 나오고 α는 1.0에서 시작.
+- 12b 셀(GitHub 버전, 커밋 이후)에 `STEPS`, `EXTRA_ARGS`, `EXP_TAG` 변수 추가. MIX=none일 때 `STEPS=150000`으로 예산 override 가능. 다만 VM 3은 아래 직접 명령이 더 간단.
+- fingerprint(resume 충돌 검사): 네트워크 모양, n_envs, buffer_size, variant, load_actor, load_ent_coef, offline_mix에 **`train.ent_coef`, `train.target_ent` 추가**(이 커밋). `total_env_steps`는 일부러 제외 — 같은 exp_id로 예산만 늘려 이어 돌리는 게 정당한 용도. 즉 같은 exp_id를 다른 예산으로 resume하면 그냥 이어진다(사고 아님).
+- `plot_results.py`: 조건별 seed 수가 달라도(5/3/3/5/3) 점마다 있는 seed로 평균·SE(ddof=1). 라벨은 `n=3-5`처럼 범위. 예산이 다른 run이 섞이면 150k 이후는 seed 수가 줄어든다. `metrics.csv`에 `at_150k`(모든 run이 갖는 지점) 추가.
+- `base_policy_eval.csv`가 없으면 기준선·regret 없이 그림만 그린다(에러 없음). 있으면 평균을 점선으로, `regret_vs_pi_dp` = 기준선 − AUC(0~100k).
+
+### VM 3 셀 (GitHub 노트북 → 0 → 1 → 2 → 3 → 5b 복원 → 6 → 7 → 7b → 8 → 9 → 아래)
+
+사전학습 s4·s5 (백그라운드, seed당 약 20분, 둘 동시):
+```bash
+%%bash
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl
+source /content/env.sh
+cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project
+for SEED in 4 5; do
+  nohup python offline_pretrain.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \
+    pretrain.method=iql seed=$SEED \
+    offline_data_path=$PROJ/offline/can_train_offline.npz log_dir=$PROJ/logs \
+    > $PROJ/logs/pretrain_s${SEED}.out 2>&1 &
+  echo "started iql pretrain seed $SEED (pid $!)"
+done
+```
+
+사전학습이 필요 없는 7개:
+```bash
+%%bash
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl
+source /content/env.sh
+cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project
+CFG="--config-path=cfg/robomimic --config-name=dsrl_can.yaml"
+COMMON="log_dir=$PROJ/logs train.total_env_steps=150000 offline_mix.mode=none load_offline_data=False"
+launch () { EXP=$1; shift; nohup python train_dsrl.py $CFG exp_id=$EXP "$@" $COMMON > $PROJ/logs/$EXP.out 2>&1 & echo "started $EXP (pid $!)"; }
+launch can_baseline_s4 seed=4 variant=baseline
+launch can_baseline_s5 seed=5 variant=baseline
+launch can_fixalpha_s2 seed=2 variant=baseline train.ent_coef=0.01
+launch can_fixalpha_s3 seed=3 variant=baseline train.ent_coef=0.01
+for S in 1 2 3; do
+  launch can_warmupc_s$S seed=$S variant=warmup pretrain.load_actor=False pretrain_path=$PROJ/logs/pretrain/warmup_can_s$S.pt
+done
+```
+
+`.pt` 두 개 확인(`ls $PROJ/logs/pretrain/iql_can_s4.pt iql_can_s5.pt`) 후 iql s4·s5:
+```bash
+%%bash
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl
+source /content/env.sh
+cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project
+CFG="--config-path=cfg/robomimic --config-name=dsrl_can.yaml"
+COMMON="log_dir=$PROJ/logs train.total_env_steps=150000 offline_mix.mode=none load_offline_data=False"
+launch () { EXP=$1; shift; nohup python train_dsrl.py $CFG exp_id=$EXP "$@" $COMMON > $PROJ/logs/$EXP.out 2>&1 & echo "started $EXP (pid $!)"; }
+for S in 4 5; do launch can_iql_s$S seed=$S variant=iql pretrain_path=$PROJ/logs/pretrain/iql_can_s$S.pt; done
+```
+
+확인(5분 뒤): `grep -h "\[pretrain\]\|\[eval\] env_steps=0\|\[budget\]"`으로 warmupc 세 개에 actor가 없는지, fixalpha 로그의 `ent_coef`가 0.01인지, `[budget] ... target 150000`인지. 그다음 keepalive.
+
+π_dp 기준선 (9/5 아침 최우선, 빈 VM 어디서든, seed당 3~5분, 500 에피소드면 약 10분):
+```python
+run_bash(r'''
+PROJ=/content/drive/MyDrive/dsrl_project
+for S in 1 2 3; do
+  python scripts/eval_base_policy.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml seed=$S num_evals=500 log_dir=$PROJ/logs
+done
+cat $PROJ/logs/base_policy_eval.csv
+''')
+```
 판정 규칙: dip 시점에 `mu_absmean`·`w_frac_sat` 급등 + `ent_coef` 아직 높음 → H2. w 얌전한데 `q_start − mc_return` 부풀어 있음 → H1. p 높은 run에서 `mu_absmean` 낮게 유지 → 비율이 H2 경로로 작동.

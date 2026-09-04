@@ -249,6 +249,10 @@ def config_fingerprint(cfg):
         "n_envs": int(cfg.env.n_envs),
         "buffer_size": int(cfg.train.get("buffer_size", 0)),
         "variant": str(cfg.get("variant", "baseline") or "baseline"),
+        # auto (-1) vs a fixed alpha is a different experiment; the budget
+        # (total_env_steps) is deliberately left out so a run can be extended.
+        "ent_coef": float(cfg.train.get("ent_coef", -1)),
+        "target_ent": float(cfg.train.get("target_ent", -1)),
     })
     pretrain = cfg.get("pretrain", None)
     if pretrain is not None:
