@@ -11,8 +11,9 @@
 
 논문 DSRL(Wagenmaker et al. 2025, arXiv:2506.15799)의 offline-to-online 초기 성능 dip이
 **critic 초기화** 때문인지, IQL로 critic을 미리 만들면 줄어드는지 robomimic Can에서 실험한다.
-인프라·검토·사전학습은 끝났고, **본 실험 9 run 중 seed 1 세 개가 Colab G4 VM 하나에서 돌고 있다.**
-남은 것은 처리량 판단 → seed 2, 3 (6 run) → 분석이다. 크레딧 만료는 약 2026-09-09.
+인프라·검토·사전학습은 끝났고, **본 실험 9 run(VM 1)과 두 번째 축(오프라인 비율 스케줄) 8 run(VM 2)이 돌고 있다.**
+9/4 오후에 지시서(WORK_ORDER.md)대로 비율 스케줄과 dip 진단 로깅을 구현했다(섹션 13).
+남은 것은 linear 3 run → π_dp 기준선 → 분석(`plot_results.py`) → 포스터(마감 2026-09-09).
 
 ---
 
@@ -65,19 +66,28 @@ critic 초기화가 dip을 줄이면 "Q_W 크기가 엔트로피 항을 이겨�
   로그 수치: iql q_mean ≈ −100, v_mean이 q_mean 살짝 위(expectile 방향 맞음); warmup 끝 α ≈ 0.047, Q_W ≈ −47.
 - **dip 관찰됨**: 처리량 run(`tput_can`, seed 0)에서 step 0 성공률 0.530 → 8,208 env step 0.350 (100 에피소드, SE ≈ 5%p).
 
-### 진행 중
-- Colab **G4 VM 하나**(RTX PRO 6000 Blackwell, vCPU 48)에서 본학습 seed 1 세 개가 백그라운드로 돌고 있음:
-  `can_baseline_s1`(가장 먼저 시작), `can_iql_s1`, `can_warmup_s1`(마지막). 2026-09-04 새벽(KST) 시작.
-- **아직 안 한 판단**: 한 VM에 3개를 얹었을 때 각 run 시간. 13번 진행확인 셀의 `h for the whole run`을 세 run에 대해 보고
-  각 9 h 이하면 이 방식 유지(크레딧 1/3), 15 h 이상이면 세션을 나눈다.
-- 잔여 크레딧: 정확한 값 미확인. 9/3 630 → 사전학습·테스트로 40~50 사용 추정 → **약 580~590**.
-  9 run 비용: 한 VM 3개 얹기가 되면 약 300, 따로 돌리면 약 530(G4 9/h). A100(약 11.8/h)은 예산 초과.
+### 진행 중 (2026-09-04 밤 22:00 KST 기준)
+- **VM 1** (G4, vCPU 48, RAM 176GB): 본학습 9개 `can_{baseline,iql,warmup}_s{1,2,3}` 300k. run당 RAM 약 17GB, 9개에 155GB.
+  9개 동시일 때 run당 약 7 env step/s. 오후에 유휴 판정으로 VM이 한 번 죽어 21:30에 체크포인트에서 resume함
+  (baseline s1 199k, iql s1 149k, warmup s1·s2 124k, 나머지 99k). 예상 종료: seed 1 새벽 1~4시, seed 2·3 아침 6~7시.
+- **VM 2** (G4, 노트북 사본): `can_fixalpha_s1`(100k) + `can_mix_prefill_s{1,2,3}`, `can_mix_fixed_s{1,2,3}`, `can_iql_linear_s1`(200k). 8개, RAM 138GB. 예상 종료 아침 5~6시.
+- 두 VM 모두 **keepalive 셀**(섹션 3) 실행 중. 잔여 크레딧 22:00 기준 약 580, 두 VM 시간당 18.
+- 아직 안 띄운 것: `can_mix_linear_s{1,2,3}` (VM 1 본학습이 끝나 RAM이 비면), π_dp 기준선(`eval_base_policy.py`), 선택 조건 `can_warmupc_s{1,2,3}`.
 
-### 남은 순서
-1. 처리량 판단(위) → seed 2, 3 여섯 run 배치 결정.
-2. baseline s1 평가가 4~5회 쌓이면 dip 모양 + `train_log.csv`의 `ent_coef` 곡선을 같이 확인.
-3. 9 run 완료. 끝난 run은 `checkpoint/` 지워도 됨(CSV가 결과물).
-4. 분석(섹션 7).
+### 지금까지 관찰 (seed 1, 점당 ±5%p 이상의 노이즈)
+- baseline s1: 0.66 → 29k에서 0.34, 49k까지 0.25~0.45, 64k부터 0.5~0.6, 179k 0.69, 204k 0.62~0.75. **dip 뚜렷.** s2는 dip이 거의 없고 s3는 낮게 시작(0.34)해 오름. dip은 seed 의존.
+- iql s1: 0.62 → 29k 0.29, 34k부터 0.42, 44k 0.55. baseline보다 20~30k 빨리 회복. 154k 0.64~0.67.
+- warmup: **세 seed 모두 step 0 성공률 0.01~0.03** (오프라인 actor가 π_dp를 망가뜨림), 5k 학습 뒤 0.48~0.70으로 회복. 가장 재현성 있는 현상.
+- 같은 seed의 step-0 값이 run마다 다름(seed 1: 0.62~0.83). 무작위 actor + 평가 노이즈. **regret 기준선은 step 0가 아니라 π_dp+N(0,I) 평가값**이어야 함.
+- 같은 정책의 100 에피소드 평가가 0.83 vs 0.71처럼 갈림(resume으로 같은 구간 두 번 평가됨). 평가 노이즈가 이론값보다 큼 → 분석 때 평활 필수.
+
+### 내일(9/5 토) 아침 순서
+1. 두 VM에서 `git pull origin o2o` 후 현황 셀. 끝난 run은 alive 목록에서 사라짐.
+2. VM 1에 RAM이 비는 대로 MIX 셀로 `MIX=linear` SEED 1·2·3 (VARIANT=baseline). 약 8시간.
+3. VM 1 또는 VM 2 빈 자리에 π_dp 기준선: `eval_base_policy.py` seed 1·2·3 각 3~5분 → `$PROJ/logs/base_policy_eval.csv`.
+4. 본학습 9개 결과로 `plot_results.py` 첫 그림(섹션 13 명령). seed 1 부분 데이터로도 됨.
+5. 여유 있으면 `can_warmupc_s{1,2,3}`(섹션 2 아래 명령) 3개.
+6. 끝난 run의 `checkpoint/`는 지워도 됨(CSV가 결과물).
 
 ---
 
@@ -95,6 +105,34 @@ critic 초기화가 dip을 줄이면 "Q_W 크기가 엔트로피 항을 이겨�
 - 섹션 9까지 끝나면 20번 검증 셀 출력에 `torch 2.7.1+cu128`, `compute cap (12, 0)`, `matmul ok True`가 있어야 한다.
 - Pro+: 브라우저를 닫아도 런타임은 최대 24h 백그라운드 유지. **"런타임 삭제"는 도는 프로세스를 전부 죽인다.**
   본학습은 체크포인트(25k env step마다)에서 resume되지만, 사전학습은 끝나야 .pt가 써지므로 처음부터 다시다.
+- **유휴 판정 주의 (9/4 오후에 실제로 당함).** nohup 백그라운드 프로세스는 Colab 눈에 "활동"이 아니다. 셀이 아무것도 실행 중이 아니면
+  유휴로 판정돼 VM이 죽는다. run을 띄운 뒤 반드시 아래 **keepalive 셀**을 실행해 두고 탭을 열어 둔다(10분마다 한 줄, 다 끝나면 스스로 멈춤).
+  다른 셀을 돌려야 하면 keepalive를 정지 → 셀 실행 → keepalive 재실행.
+  ```python
+  import subprocess, time
+  while True:
+      out = subprocess.run("ps aux | grep '[t]rain_dsrl.py' | grep -o 'exp_id=[a-z_0-9]*' | sed 's/exp_id=//' | tr '\\n' ' '",
+                           shell=True, capture_output=True, text=True).stdout.strip()
+      ram = subprocess.run("free -g | awk 'NR==2{print $3\\"/\\"$2}'", shell=True, capture_output=True, text=True).stdout.strip()
+      print(time.strftime('%H:%M'), 'ram', ram, '|', out or '(none running)', flush=True)
+      if not out:
+          break
+      time.sleep(600)
+  ```
+- **환경 캐시**: 설치 끝난 conda env가 `$PROJ/env_cache/dsrl_env.tar.gz`(torch 2.7.1 cu128 포함)에 저장돼 있다. 새 VM에서는
+  **0(Drive) → 1(condacolab) → 2(Drive) → 3(클론) → 복원 셀(노트북 5b, 또는 아래) → 6 → 7 → 7b → 8 → 9**. 4~5번(15분)을 건너뛰어 3~5분.
+  ```bash
+  %%bash
+  set -e
+  CACHE=/content/drive/MyDrive/dsrl_project/env_cache
+  mkdir -p /usr/local/envs && cd /usr/local/envs && rm -rf dsrl
+  tar -xzf $CACHE/dsrl_env.tar.gz
+  source /usr/local/etc/profile.d/conda.sh && conda activate dsrl
+  python -c "import torch, robomimic; x=torch.randn(256,256,device='cuda'); print(torch.__version__, (x@x).sum().item()!=0)"
+  ```
+- VM 2는 노트북 **사본**(파일 → 드라이브에 사본 저장)으로 연다. 노트북 하나에 런타임 하나. 두 VM은 같은 Drive를 쓰고 결과는 같은 `$PROJ/logs/`에 쌓인다.
+- VM 하나에 여러 run을 얹는 게 정답이다. run당 RAM 약 17GB, CPU 48개라 9개까지 얹어도 run당 약 7 env step/s. 크레딧은 VM당 시간당 9로 고정이므로 얹을수록 싸다.
+- Drive의 예전 노트북 사본은 설치 셀이 torch 2.4.0을 깐다. 설치 후 torch만 교체하는 셀(섹션 5)을 돌리거나, 설치 셀의 마지막 torch 줄을 cu128로 바꿔서 실행.
 
 ---
 
@@ -153,6 +191,30 @@ critic 초기화가 dip을 줄이면 "Q_W 크기가 엔트로피 항을 이겨�
 
 # run 하나 죽이기 (pkill -f train_dsrl.py 는 자기 셸까지 죽인다)
 !pkill -f "[c]an_iql_s1"
+```
+
+현황 셀 (어느 VM에서든; 살아 있는 run, RAM, 최근 평가 4개, 남은 시간):
+```python
+run_bash(r'''
+PROJ=/content/drive/MyDrive/dsrl_project
+echo "alive: $(ps aux | grep '[t]rain_dsrl.py' | grep -o 'exp_id=[a-z_0-9]*' | sed 's/exp_id=//' | tr '\n' ' ')"
+free -g | awk 'NR==2{print "ram used/total:", $3"/"$2, "GB"}'
+for E in $(ps aux | grep '[t]rain_dsrl.py' | grep -o 'exp_id=[a-z_0-9]*' | sed 's/exp_id=//'); do
+  echo "== $E =="
+  [ -f $PROJ/logs/$E/eval_log.csv ] && cut -d, -f2,5 $PROJ/logs/$E/eval_log.csv | tail -n +2 | tail -n 4 | tr '\n' ' '; echo
+  T=$([ "${E#can_mix_}" != "$E" ] || [ "${E#can_iql_linear}" != "$E" ] && echo 200000 || echo 300000)
+  [ -f $PROJ/logs/$E/train_log.csv ] && python colab/throughput.py $PROJ/logs/$E --target $T | tail -n 1
+done
+''')
+```
+
+비율 실험 띄우기: 노트북(GitHub 버전) 12b 셀에 `MIX` 변수가 있다. `VARIANT`, `SEED`, `MIX` 세 줄만 바꿔 실행.
+MIX≠none이면 200k, 이름은 `can_mix_<MIX>_s<seed>`(baseline) 또는 `can_<variant>_<MIX>_s<seed>`. 사본 노트북엔 없으니 GitHub 버전에서 복사.
+
+고정 α 프로브:
+```bash
+python train_dsrl.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \
+  exp_id=can_fixalpha_s1 seed=1 variant=baseline train.ent_coef=0.01 train.total_env_steps=100000 log_dir=$PROJ/logs
 ```
 
 사전학습 6개 백그라운드 (필요할 때만. 이미 다 있음):
@@ -261,6 +323,10 @@ A100 처리량 run (`tput_can`, seed 0, rollout 3,200 + 학습 10,000 env step):
 - 처리량은 GPU 종류보다 vCPU 수에 달렸다. T4 수치는 예산에 못 쓴다.
 - pip `dppo requires torch==2.4.0` 경고는 무해.
 - "Is instance: True" 반복 출력은 상류 디버그 프린트. 무해.
+- resume한 run의 `eval_log.csv`에는 같은 `env_steps`가 두 번 나온다(체크포인트 이후 구간을 다시 돌기 때문). `plot_results.py`는 나중 행을 쓴다.
+- `throughput.py`는 resume 직후 몇 행 동안 공백 때문에 시간이 부풀어 보였는데, 4616a56부터 마지막 재시작 이후 행만 잰다.
+- 현황 셀(섹션 5 아래)은 `ps`로 살아 있는 run만 잡으므로 끝난 run은 목록에서 사라진다. 끝났는지는 `$PROJ/logs/<exp>.out` 끝의 `[done]`으로.
+- 옛 12b 셀(사본 노트북)은 MIX가 없어 본학습만 띄운다. VM 2에서 그 셀을 돌리면 VM 1의 본학습과 같은 폴더에 두 프로세스가 쓰게 되니 **절대 금지**. VM 2에서는 MIX 셀만.
 
 ---
 
