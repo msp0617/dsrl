@@ -11,9 +11,9 @@
 
 논문 DSRL(Wagenmaker et al. 2025, arXiv:2506.15799)의 offline-to-online 초기 성능 dip이
 **critic 초기화** 때문인지, IQL로 critic을 미리 만들면 줄어드는지 robomimic Can에서 실험한다.
-인프라·검토·사전학습은 끝났고, **본 실험 9 run(VM 1)과 두 번째 축(오프라인 비율 스케줄) 8 run(VM 2)이 돌고 있다.**
-9/4 오후에 지시서(WORK_ORDER.md)대로 비율 스케줄과 dip 진단 로깅을 구현했다(섹션 13).
-남은 것은 linear 3 run → π_dp 기준선 → 분석(`plot_results.py`) → 포스터(마감 2026-09-09).
+**2026-09-05 아침 기준: 29 run 중 26개 완료, `can_mix_linear_s{1,2,3}`만 VM 1에서 돌고 있다(12:00 KST 완료 예정).**
+π_dp 기준선(0.405)과 첫 그림·`metrics.csv`가 나왔고 결과 해석은 **섹션 15**에 있다. 남은 것은 linear 반영 → 그림 재생성 → 포스터(일요일, 마감 2026-09-09 수).
+잔여 크레딧 약 367. VM 2·3은 반납됨. 새 VM은 캐시 복원으로 10분(섹션 3).
 
 ---
 
@@ -84,13 +84,17 @@ critic 초기화가 dip을 줄이면 "Q_W 크기가 엔트로피 항을 이겨�
 - 같은 seed의 step-0 값이 run마다 다름(seed 1: 0.62~0.83). 무작위 actor + 평가 노이즈. **regret 기준선은 step 0가 아니라 π_dp+N(0,I) 평가값**이어야 함.
 - 같은 정책의 100 에피소드 평가가 0.83 vs 0.71처럼 갈림(resume으로 같은 구간 두 번 평가됨). 평가 노이즈가 이론값보다 큼 → 분석 때 평활 필수.
 
-### 내일(9/5 토) 아침 순서
-1. 두 VM에서 `git pull origin o2o` 후 현황 셀. 끝난 run은 alive 목록에서 사라짐.
-2. VM 1에 RAM이 비는 대로 MIX 셀로 `MIX=linear` SEED 1·2·3 (VARIANT=baseline). 약 8시간.
-3. VM 1 또는 VM 2 빈 자리에 π_dp 기준선: `eval_base_policy.py` seed 1·2·3 각 3~5분 → `$PROJ/logs/base_policy_eval.csv`.
-4. 본학습 9개 결과로 `plot_results.py` 첫 그림(섹션 13 명령). seed 1 부분 데이터로도 됨.
-5. 여유 있으면 `can_warmupc_s{1,2,3}`(섹션 2 아래 명령) 3개.
-6. 끝난 run의 `checkpoint/`는 지워도 됨(CSV가 결과물).
+### 9/5(토) 아침에 한 것 (07:20~09:00 KST)
+- VM 1·2·3의 26 run 전부 `[done]` 확인. VM 2·3은 keepalive가 스스로 반납. VM 1은 붙들어 두고 재사용.
+- `git pull` → π_dp 기준선 3 seed × 500 에피소드 → `base_policy_eval.csv` (0.440/0.394/0.382).
+- `can_mix_linear_s{1,2,3}` 3개를 VM 1에 띄움(3개만 돌아 run당 15~20 env step/s, 12:00 완료 예정). keepalive(반납 없는 버전) 실행 중.
+- `plot_results.py` 첫 실행 → `$PROJ/figures/` 7개 파일. 해석은 섹션 15.
+
+### 남은 순서
+1. 12:00 이후 VM 1에서 keepalive 정지 → `!cd /content/dsrl && git pull origin o2o` → 그림 셀 재실행(섹션 13 명령). linear가 축 B 그림에 추가되고 `at_129k` 열·진단 선 스타일이 반영됨.
+2. 그림 세 장(`success_critic`, `success_mix`, `diagnostics_critic`)과 표를 보고 포스터 6패널 문안 확정(섹션 15의 해석 1~5가 초안).
+3. VM 1 런타임 삭제(더 돌릴 run 없음). 끝난 run의 `checkpoint/`는 지워도 됨(CSV가 결과물, 640MB × 29).
+4. 일요일: 포스터. 추가 run이 필요하면(예: prefill vs linear 차이가 애매할 때 seed 추가) 캐시 복원으로 VM 하나 열어 얹는다.
 
 ---
 
