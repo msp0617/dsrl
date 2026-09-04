@@ -1,9 +1,13 @@
 defaults:
   - _self_
 hydra:
-  run:  
+  run:
     dir: ${logdir}
 
+# Square: the paper's Table 4 settings (discount 0.999, initial rollout 32k env
+# steps, td100 base policy sampled with 8 DDIM steps) plus the same study keys
+# as dsrl_can.yaml (exp_id/resume, env-step budget and schedules, variant,
+# offline_mix, diagnostics), so train_dsrl.py runs it unchanged.
 name: robomimic_square_dsrl_${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
 logdir: ${log_dir}/robomimic-dsrl/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
 base_policy_path: ./dppo/log/robomimic-pretrain/square/square_pre_diffusion_mlp_ta4_td100_ddim-100steps/2025-04-11_19-13-26_44/checkpoint/state_3000.pt
@@ -12,12 +16,14 @@ normalization_path: ./dppo/log/robomimic/${env_name}/normalization.npz
 dppo_path: ./dppo
 
 algorithm: dsrl_na
+variant: baseline # baseline | warmup | iql (warmup/iql need a pretrain file; none exists for Square yet)
+pretrain_path: ''
 
 seed: 1
 device: cuda:0
-use_wandb: True
+use_wandb: False # metrics always go to train_log.csv / eval_log.csv in ${logdir}
 env_name: square
-log_dir: ./logs 
+log_dir: ./logs
 obs_dim: 23
 action_dim: 7
 cond_steps: 1
@@ -25,10 +31,24 @@ act_steps: 4
 load_offline_data: False
 deterministic_eval: False
 
-eval_interval: 4000
+exp_id: ''
+resume: True
+ckpt_dir: ''
+ckpt_every_env_steps: 25000
+save_replay_buffer: True
+
+# Same evaluation schedule as Can, in env steps: the dip is expected about
+# 10k training steps after the 32k rollout, i.e. near 42k, so the early phase
+# must stay at 5k resolution. One Square episode is 400 env steps.
+eval_schedule:
+  every_env_early: 5000
+  early_until_env: 100000
+  num_evals_early: 100
+  every_env: 25000
+
 num_evals: 200
-save_model_interval: 1000000
-save_replay_buffer: False
+eval_interval: 4000 # only used if eval_schedule is removed
+save_model_interval: 1000000 # only used if ckpt_every_env_steps is 0
 
 env:
   n_envs:  4
@@ -37,7 +57,7 @@ env:
   max_episode_steps: 400
   reset_at_iteration: False
   save_video: False
-  best_reward_threshold_for_success: 1 
+  best_reward_threshold_for_success: 1
   reward_offset: 1
   wrappers:
     robomimic_lowdim:
@@ -45,7 +65,7 @@ env:
       low_dim_keys: ['robot0_eef_pos',
                     'robot0_eef_quat',
                     'robot0_gripper_qpos',
-                    'object'] 
+                    'object']
     multi_step:
       n_obs_steps: ${cond_steps}
       n_action_steps: ${act_steps}
@@ -58,22 +78,44 @@ wandb:
   group: robomimic-square
 
 train:
+  total_env_steps: 300000 # budget in env steps, initial rollout (32,016) included
+  # 200000 -> 50000 slots; a 300k run needs 2001 + 300000/16 = 20,751.
+  buffer_size: 200000
+  offline_mix_ratio: -1
   tau: 0.005 # Target update rate
   actor_lr: 3e-4
   batch_size: 256
   train_freq: 1 # Update model after this many environment steps
   utd: 20 # Number of gradient steps to take per update
-  noise_critic_grad_steps: 10 # Number of gradient steps to take per update when fitting noise critic 
+  noise_critic_grad_steps: 10 # Number of gradient steps to take per update when fitting noise critic
   use_layer_norm: True
   layer_size: 2048 # Layer size for actor and critic
   num_layers: 3 # Number of layers for actor and critic
   discount: 0.999
   ent_coef: -1
   target_ent: 0.0
-  init_rollout_steps: 2001 # Number of rollout steps of standard diffusion policy to collect for replay buffer before training starts
+  init_rollout_steps: 2001 # 2001 x 4 envs x 4 chunk = 32,016 env steps, the paper's "initial steps 32000"
   action_magnitude: 1.5 # Maximum action magnitude in noise action space
   n_critics: 2 # Number of critic Q networks
   critic_backup_combine_type: min
+
+pretrain:
+  method: iql # iql | warmup
+  steps: 50000
+  distill_steps: 25000
+  actor_steps: 0
+  expectile: 0.7
+  batch_size: 256
+  log_every: 500
+  out_path: ''
+  load_ent_coef: False
+  load_actor: True
+
+offline_mix:
+  mode: none # none | prefill | fixed | linear (all but none need offline_data_path, which Square does not have yet)
+  p0: 0.5
+  p1: 0.1
+  until_env: 100000
 
 model:
   _target_: model.diffusion.diffusion_eval.DiffusionEval

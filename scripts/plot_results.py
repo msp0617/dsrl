@@ -27,10 +27,13 @@ import re
 import numpy as np
 import pandas as pd
 
-RUN_RE = re.compile(r"^can_(?P<group>.+)_s(?P<seed>\d+)$")
+RUN_RE = re.compile(r"^(?P<task>can|square|lift|transport)_(?P<group>.+)_s(?P<seed>\d+)$")
+# Groups keep their Can names; other tasks are prefixed (square_baseline), and
+# each axis is drawn on its own so tasks never share a y axis.
 DEFAULT_AXES = {
     "critic": ["baseline", "warmup", "iql", "warmupc", "fixalpha"],
     "mix": ["baseline", "mix_prefill", "mix_fixed", "mix_linear", "iql_linear"],
+    "square": ["square_baseline"],
 }
 DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean", "offline_p", "qw_mean"]
 
@@ -39,14 +42,22 @@ DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean"
 
 def find_runs(logs_dir):
     runs = {}
-    for path in sorted(glob.glob(os.path.join(logs_dir, "can_*"))):
+    for path in sorted(glob.glob(os.path.join(logs_dir, "*_s[0-9]*"))):
         if not os.path.isdir(path):
             continue
         m = RUN_RE.match(os.path.basename(path))
         if not m or not os.path.exists(os.path.join(path, "eval_log.csv")):
             continue
-        runs.setdefault(m.group("group"), {})[int(m.group("seed"))] = path
+        group = m.group("group") if m.group("task") == "can" else "%s_%s" % (m.group("task"), m.group("group"))
+        runs.setdefault(group, {})[int(m.group("seed"))] = path
     return runs
+
+
+def group_task(group):
+    for task in ("square", "lift", "transport"):
+        if group.startswith(task + "_"):
+            return task
+    return "can"
 
 
 def load_eval(path):
@@ -65,8 +76,10 @@ def load_train(path):
     return df.sort_values("env_steps").reset_index(drop=True)
 
 
-def base_reference(logs_dir):
-    f = os.path.join(logs_dir, "base_policy_eval.csv")
+def base_reference(logs_dir, task="can"):
+    """Mean and SE of pi_dp under N(0, I) noise, from eval_base_policy.py."""
+    name = "base_policy_eval.csv" if task == "can" else "base_policy_eval_%s.csv" % task
+    f = os.path.join(logs_dir, name)
     if not os.path.exists(f):
         return None
     df = pd.read_csv(f)
@@ -218,7 +231,7 @@ def main():
 
     runs = find_runs(args.logs)
     if not runs:
-        raise SystemExit("no can_<group>_s<seed> directories with eval_log.csv under %s" % args.logs)
+        raise SystemExit("no <task>_<group>_s<seed> directories with eval_log.csv under %s" % args.logs)
     os.makedirs(args.out, exist_ok=True)
     axes = dict(DEFAULT_AXES)
     if args.axes:
@@ -226,7 +239,7 @@ def main():
         for part in args.axes.split(";"):
             name, groups = part.split("=")
             axes[name] = groups.split(",")
-    reference = base_reference(args.logs)
+    references = {task: base_reference(args.logs, task) for task in ("can", "square", "lift", "transport")}
 
     rows = []
     for g, seeds in sorted(runs.items()):
@@ -242,19 +255,22 @@ def main():
             vals = [m[key] for m in per_seed if key in m and np.isfinite(m[key])]
             agg[key] = float(np.mean(vals)) if vals else np.nan
             agg[key + "_se"] = float(np.std(vals, ddof=1) / np.sqrt(len(vals))) if len(vals) > 1 else np.nan
+        reference = references.get(group_task(g))
         if reference is not None and np.isfinite(agg["auc_window"]):
             agg["regret_vs_pi_dp"] = reference[0] - agg["auc_window"]
         rows.append(agg)
     metrics = pd.DataFrame(rows)
     metrics.to_csv(os.path.join(args.out, "metrics.csv"), index=False)
     print(metrics[metrics.seed == "mean"].to_string(index=False))
-    if reference is not None:
-        print("pi_dp reference: %.3f +- %.3f" % reference)
+    for task, reference in references.items():
+        if reference is not None:
+            print("pi_dp reference (%s): %.3f +- %.3f" % ((task,) + reference))
 
     for name, groups in axes.items():
         present = [g for g in groups if g in runs]
         if not present:
             continue
+        reference = references.get(group_task(present[0]))
         fig, ax = plt.subplots(figsize=(7, 4))
         plot_success(ax, runs, present, reference, args.smooth)
         ax.set_title("axis: %s" % name)

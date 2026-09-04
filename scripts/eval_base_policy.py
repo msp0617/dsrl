@@ -11,7 +11,9 @@ LoggingCallback.evaluate.
 (no --config-path: Hydra resolves that flag relative to this script's own
 directory; the decorator below already points at the repo's cfg/robomimic.)
 
-Appends one row to ${log_dir}/base_policy_eval.csv.
+Appends one row to ${log_dir}/base_policy_eval.csv (Can) or
+base_policy_eval_<env>.csv. For another task pass --config-name=dsrl_square.yaml
+(config-name is fine on the command line; only --config-path is not).
 """
 
 import csv
@@ -83,7 +85,10 @@ def main(cfg):
         "success_rate": rate,
         "stderr": float(np.sqrt(rate * (1 - rate) / n)),
     }
-    out = os.path.join(str(cfg.log_dir), "base_policy_eval.csv")
+    # Can keeps the original file name; other tasks get their own file so the
+    # rows never mix (the plotter picks the file by task).
+    name = "base_policy_eval.csv" if str(cfg.env_name) == "can" else "base_policy_eval_%s.csv" % cfg.env_name
+    out = os.path.join(str(cfg.log_dir), name)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     write_header = not os.path.exists(out)
     with open(out, "a", newline="") as f:
