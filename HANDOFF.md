@@ -490,6 +490,36 @@ for S in 4 5; do launch can_iql_s$S seed=$S variant=iql pretrain_path=$PROJ/logs
 
 **주의**: 평가 노이즈가 커서 개별 seed 곡선은 ±0.1 흔들린다. 포스터는 3~5 seed 평균±SE로. 진단 그림의 fixalpha 선은 warmupc와 겹쳐 안 보였던 것(값은 있음) → 선 스타일 구분(커밋 참조).
 
+## 16. Square 일반성 확인 (9/5, HANDOFF_SQUARE.md 검증 결과)
+
+**예측**: α 감쇠는 과제와 무관(그래디언트 스텝 함수)하므로 Square baseline도 학습 시작 후 약 1만 step, 즉 **env 42k 근처**(rollout 32,016 포함)에서 바닥. 포스터는 Can만으로 완성하고 Square는 나오면 패널 추가.
+
+**검증에서 드러난 것**: `dsrl_square.yaml`이 상류 원본이라 `exp_id`, `variant`, `train.total_env_steps`, `offline_mix`, `eval_schedule`, `ckpt_every_env_steps`가 없고 `use_wandb: True`, `save_replay_buffer: False`, 버퍼 10M(4GB), 평가 주기 64k env step이었다.
+지시서 명령을 그대로 돌리면 Hydra가 없는 키 override("Could not override 'exp_id'")로 즉시 죽거나, 돌아도 dip을 못 본다. → **커밋 a16f020**에서 config를 Can과 같은 키로 재작성(논문 Square 값은 유지: discount 0.999, `init_rollout_steps` 2001 = 32,016 env step, td100 정책 + DDIM 8, 에피소드 400 step). 평가 스케줄 5k/25k 동일. 진단 로깅은 config 무관하게 붙는다(`DSRLResumable.train`, `LoggingCallback`).
+`plot_results.py`는 `<task>_<group>_s<seed>`를 인식해 `square_baseline`을 별도 축(`success_square.png`)에 그리고 기준선은 `base_policy_eval_square.csv`를 쓴다.
+
+**π_dp 파일**: config는 `./dppo/log/robomimic-pretrain/square/.../state_3000.pt`와 `./dppo/log/robomimic/square/normalization.npz`를 기대한다. Drive에는 `dppo_log/dsrl_public_checkpoints/...` 아래에 있으므로 노트북 6번 아래에 추가한 **Square 배치 셀**(find → 상대경로에 복사)을 먼저 실행. `normalization.npz`가 Drive에 없으면 Square는 불가(공개 체크포인트 폴더에 같이 있어야 정상).
+
+**순서 (VM 1, linear 3개 도는 중, RAM 여유 있음)**: keepalive 정지 → `git pull origin o2o` → Square 배치 셀 → 아래 → 5분 확인 → keepalive.
+```bash
+%%bash
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl
+source /content/env.sh
+cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project
+CFG="--config-path=cfg/robomimic --config-name=dsrl_square.yaml"
+COMMON="log_dir=$PROJ/logs train.total_env_steps=150000 offline_mix.mode=none load_offline_data=False"
+for S in 1 2 3; do
+  nohup python train_dsrl.py $CFG exp_id=square_baseline_s$S seed=$S variant=baseline $COMMON \
+    > $PROJ/logs/square_baseline_s$S.out 2>&1 &
+  echo "started square_baseline_s$S (pid $!)"
+done
+```
+5분 확인: `grep -h "Loaded base policy\|\[eval\] env_steps=0\|\[budget\]" $PROJ/logs/square_baseline_s?.out` → 경로에 `square`, `target 150000`, step-0 성공률. **step 0가 0.05 이하면 3개 죽이고(`pkill -f "[s]quare_baseline"`) Can에 집중.** 처리량이 느려 150k가 8시간을 넘길 것 같으면 100k로.
+π_dp 기준선(선택): `python scripts/eval_base_policy.py --config-name=dsrl_square.yaml seed=1 num_evals=500 log_dir=$PROJ/logs` → `base_policy_eval_square.csv`.
+
+**판정**: 바닥이 42k±5k면 예측 적중("메커니즘은 과제 무관"). 다른 곳이면 그대로 보고. dip 없음 + step 0 낮음이면 "헤드룸 부족"으로 한정. `ent_coef` 곡선을 겹쳐 α<0.1 시점을 표시.
+
 π_dp 기준선 (9/5 아침 최우선, 빈 VM 어디서든, seed당 3~5분, 500 에피소드면 약 10분):
 ```python
 run_bash(r'''
