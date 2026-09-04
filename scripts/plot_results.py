@@ -155,8 +155,13 @@ def plot_success(ax, runs, groups, reference=None, smooth=0):
     ax.legend(fontsize=8)
 
 
+LINESTYLES = ["-", "--", "-.", ":", (0, (5, 1)), (0, (3, 1, 1, 1))]
+
+
 def plot_diagnostics(fig_axes, runs, groups):
-    for g in groups:
+    # Distinct line styles: conditions whose actor statistics coincide
+    # (fixalpha and warmupc on Can) would otherwise hide each other.
+    for i, g in enumerate(groups):
         if g not in runs:
             continue
         diag = binned_diagnostics([load_train(p) for p in runs[g].values()])
@@ -164,7 +169,7 @@ def plot_diagnostics(fig_axes, runs, groups):
             continue
         for ax, col in zip(fig_axes, DIAG_COLS):
             if col in diag:
-                ax.plot(diag.index, diag[col], label=g)
+                ax.plot(diag.index, diag[col], label=g, ls=LINESTYLES[i % len(LINESTYLES)], lw=1.6)
     for ax, col in zip(fig_axes, DIAG_COLS):
         ax.set_title(col, fontsize=9)
         ax.grid(alpha=0.3)
