@@ -462,7 +462,7 @@ for S in 4 5; do launch can_iql_s$S seed=$S variant=iql pretrain_path=$PROJ/logs
 run_bash(r'''
 PROJ=/content/drive/MyDrive/dsrl_project
 for S in 1 2 3; do
-  python scripts/eval_base_policy.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml seed=$S num_evals=500 log_dir=$PROJ/logs
+  python scripts/eval_base_policy.py seed=$S num_evals=500 log_dir=$PROJ/logs   # --config-path 붙이면 scripts/cfg를 찾아 실패
 done
 cat $PROJ/logs/base_policy_eval.csv
 ''')

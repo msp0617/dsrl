@@ -6,8 +6,10 @@ run is better measured against pi_dp with the noise it was trained for, which
 is what this script evaluates, with the same episode protocol as
 LoggingCallback.evaluate.
 
-  python scripts/eval_base_policy.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \
-      num_evals=200 seed=1 log_dir=$PROJ/logs
+  python scripts/eval_base_policy.py num_evals=200 seed=1 log_dir=$PROJ/logs
+
+(no --config-path: Hydra resolves that flag relative to this script's own
+directory; the decorator below already points at the repo's cfg/robomimic.)
 
 Appends one row to ${log_dir}/base_policy_eval.csv.
 """
