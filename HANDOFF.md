@@ -520,6 +520,41 @@ done
 
 **판정**: 바닥이 42k±5k면 예측 적중("메커니즘은 과제 무관"). 다른 곳이면 그대로 보고. dip 없음 + step 0 낮음이면 "헤드룸 부족"으로 한정. `ent_coef` 곡선을 겹쳐 α<0.1 시점을 표시.
 
+### 9/5 09:30 진행: Square baseline 3개 띄움, 데이터도 확보
+- `square_baseline_s{1,2,3}` VM 1에서 실행 중(150k). step-0 성공률 **0.57 / 0.57 / 0.45** → 헤드룸 충분.
+- Square 오프라인 데이터 확보: robomimic square **mh** hdf5 → `make_offline_chunks.py` → `$PROJ/offline/square_train_offline.npz`
+  (79,828 청크, 19,957 슬롯, 300 데모, 보상 1.9%). `--check_against` 공개 train.npz **비트 일치(max |diff| 0)** → DPPO Square 정책이 이 데이터로 학습됨.
+- Square 사전학습 6개(iql·warmup × seed 1~3) VM 1에서 백그라운드 실행 중 → `$PROJ/logs/pretrain/{iql,warmup}_square_s{1,2,3}.pt` (약 1시간).
+  버퍼 검사: prefill 150k = 2001 + 19,957 + 9,375 = 31,333 슬롯 < 50,000 ✓.
+
+### Square 조건 확장 (baseline 첫 평가에서 dip이 보이면)
+VM 2를 캐시 복원으로 열어(0→1→2→3→5b 복원→6→**Square 배치 셀**→7→7b→8→9) 아래 9개. RAM 9×18 ≈ 160GB.
+```bash
+%%bash
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl
+source /content/env.sh
+cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project
+CFG="--config-path=cfg/robomimic --config-name=dsrl_square.yaml"
+COMMON="log_dir=$PROJ/logs train.total_env_steps=150000"
+launch () { EXP=$1; shift; nohup python train_dsrl.py $CFG exp_id=$EXP "$@" $COMMON > $PROJ/logs/$EXP.out 2>&1 & echo "started $EXP (pid $!)"; }
+for S in 1 2 3; do
+  launch square_iql_s$S     seed=$S variant=iql    pretrain_path=$PROJ/logs/pretrain/iql_square_s$S.pt
+  launch square_warmupc_s$S seed=$S variant=warmup pretrain.load_actor=False pretrain_path=$PROJ/logs/pretrain/warmup_square_s$S.pt
+  launch square_mix_prefill_s$S seed=$S variant=baseline offline_mix.mode=prefill offline_data_path=$PROJ/offline/square_train_offline.npz
+done
+```
+VM 1은 12:00에 linear가 끝나면 `square_warmup_s{1,2,3}`(actor 포함) 3개:
+```bash
+for S in 1 2 3; do
+  launch square_warmup_s$S seed=$S variant=warmup pretrain_path=$PROJ/logs/pretrain/warmup_square_s$S.pt
+done
+```
+(위 `launch` 정의와 CFG/COMMON을 같은 셀에 넣어서.) 확인: `[pretrain] ... loaded ...`에 warmupc는 actor 없음, `[budget] ... target 150000`.
+`plot_results.py`는 `square_*` 그룹을 자동 인식하지만 기본 축은 `square=square_baseline`뿐이므로 확장 후엔
+`--axes "critic=baseline,warmup,iql,warmupc,fixalpha;mix=baseline,mix_prefill,mix_fixed,mix_linear,iql_linear;square=square_baseline,square_iql,square_warmupc,square_warmup,square_mix_prefill"`.
+Square π_dp 기준선: `python scripts/eval_base_policy.py --config-name=dsrl_square.yaml seed=$S num_evals=500 log_dir=$PROJ/logs` (seed 1~3) → `base_policy_eval_square.csv`.
+
 π_dp 기준선 (9/5 아침 최우선, 빈 VM 어디서든, seed당 3~5분, 500 에피소드면 약 10분):
 ```python
 run_bash(r'''
