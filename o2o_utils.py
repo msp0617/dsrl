@@ -83,6 +83,10 @@ def config_fingerprint(cfg):
         "buffer_size": int(cfg.train.get("buffer_size", 0)),
         "variant": str(cfg.get("variant", "baseline") or "baseline"),
     })
+    pretrain = cfg.get("pretrain", None)
+    if pretrain is not None:
+        fingerprint["load_actor"] = bool(pretrain.get("load_actor", True))
+        fingerprint["load_ent_coef"] = bool(pretrain.get("load_ent_coef", False))
     return fingerprint
 
 
@@ -236,11 +240,12 @@ def check_pretrain_meta(meta, cfg, variant):
         raise RuntimeError("The pretrained weights do not fit this run's networks:\n%s" % "\n".join(lines))
 
 
-def load_pretrained_weights(model, path, cfg, variant, load_ent_coef=False):
+def load_pretrained_weights(model, path, cfg, variant, load_ent_coef=False, load_actor=True):
     """Copy offline-pretrained networks into a freshly built agent.
 
-    The critics are always loaded, the actor when the offline stage trained it.
-    The entropy coefficient is loaded only when ``load_ent_coef`` is set: the
+    The critics are always loaded, the actor when the offline stage trained it
+    and ``load_actor`` is set. The entropy coefficient is loaded only when
+    ``load_ent_coef`` is set: the
     warm-up stage anneals it, and starting online with an already small alpha
     is an advantage that has nothing to do with the critic. The optimizers
     start fresh, as they would for any newly initialised network.
@@ -251,6 +256,8 @@ def load_pretrained_weights(model, path, cfg, variant, load_ent_coef=False):
 
     loaded = []
     for name in ("critic", "critic_target", "critic_noise", "actor"):
+        if name == "actor" and not load_actor:
+            continue
         if name in payload:
             getattr(model, name).load_state_dict(payload[name])
             loaded.append(name)

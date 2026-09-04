@@ -125,6 +125,16 @@ the critic, so it is off unless `pretrain.load_ent_coef=True`; every variant
 then goes online with the same alpha. For the same reason `distill_steps`
 matches the number of distillation steps warm-up performs as a side effect.
 
+Warm-up also trains an actor, and loading it turned out to be destructive on
+its own (step-0 success 0.01 to 0.03 on every seed), which mixes an actor
+effect into the critic comparison. `pretrain.load_actor=False` loads only the
+critics, so warm-up and iql then differ in nothing but how the critic was made.
+
+The step-0 point of a run is pi_dp driven by a *random* pi_W, and its bias
+varies by seed (0.34 to 0.66 on Can). `scripts/eval_base_policy.py` measures
+pi_dp with the N(0, I) noise it was trained for, the reference the regret
+should be taken against; it appends to `${log_dir}/base_policy_eval.csv`.
+
 Whether the offline data also stays in the online replay buffer is a separate
 switch, `load_offline_data`, deliberately independent of the variant so that
 the critic-initialisation effect can be measured on its own.

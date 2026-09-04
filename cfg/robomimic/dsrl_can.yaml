@@ -123,6 +123,10 @@ pretrain:
   # warmup a head start that has nothing to do with the critic, so by default
   # every variant goes online with the same initial alpha.
   load_ent_coef: False
+  # warmup trains an actor alongside its critics. With load_actor=False only
+  # the critics are loaded and the actor starts random, as in iql, so the two
+  # variants then differ in nothing but how the critic was made.
+  load_actor: True
 
 model:
   _target_: model.diffusion.diffusion_eval.DiffusionEval

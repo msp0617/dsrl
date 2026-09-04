@@ -227,7 +227,10 @@ def main(cfg: OmegaConf):
             # curve measures the policy this run actually starts from.
             pretrain_cfg = cfg.get("pretrain", None)
             load_ent_coef = bool(pretrain_cfg.get("load_ent_coef", False)) if pretrain_cfg else False
-            meta, loaded = load_pretrained_weights(model, pretrain_path, cfg, variant, load_ent_coef=load_ent_coef)
+            load_actor = bool(pretrain_cfg.get("load_actor", True)) if pretrain_cfg else True
+            meta, loaded = load_pretrained_weights(
+                model, pretrain_path, cfg, variant, load_ent_coef=load_ent_coef, load_actor=load_actor
+            )
             print(
                 "[pretrain] %s: loaded %s from %s (%s steps on %s)"
                 % (variant, ", ".join(loaded), pretrain_path, meta.get("steps"), meta.get("offline_data_path")),
