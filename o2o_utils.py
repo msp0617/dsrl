@@ -27,7 +27,17 @@ from stable_baselines3 import DSRL, SAC
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.save_util import load_from_zip_file, recursive_setattr
 
+try:
+    from stable_baselines3.common.type_aliases import ReplayBufferSamples
+except ImportError:  # torch-free tests stub stable_baselines3
+    from collections import namedtuple
+
+    ReplayBufferSamples = namedtuple(
+        "ReplayBufferSamples", "observations actions next_observations dones rewards"
+    )
+
 VARIANTS = ("baseline", "warmup", "iql")
+MIX_MODES = ("none", "prefill", "fixed", "linear")
 
 STATE_FILE = "run_state.json"
 SLOTS = ("a", "b")
@@ -43,14 +53,171 @@ class DSRLResumable(DSRL):
         both wasteful and fragile across sessions.
     """
 
+    # Offline replay mix (offline_mix.mode). Class defaults so that a model
+    # built without the feature behaves exactly like upstream.
+    offline_buf = None  # OfflineBuffer when mode is fixed/linear
+    offline_p = 0.0  # share of each batch drawn from offline_buf
+    offline_prefill_slots = 0  # buffer slots D_off occupies when mode is prefill
+
     def _excluded_save_params(self):
-        return super()._excluded_save_params() + ["diffusion_policy"]
+        return super()._excluded_save_params() + ["diffusion_policy", "offline_buf"]
 
     def _get_torch_save_params(self):
         state_dicts, pytorch_variables = super()._get_torch_save_params()
         if "critic_noise.optimizer" not in state_dicts:
             state_dicts = state_dicts + ["critic_noise.optimizer"]
         return state_dicts, pytorch_variables
+
+    def _sample_batch(self, batch_size):
+        if self.offline_buf is None:
+            return self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
+        return mixed_sample(
+            self.replay_buffer, self.offline_buf, batch_size, self.offline_p, env=self._vec_normalize_env
+        )
+
+    def current_offline_share(self):
+        """Share of a batch that comes from the demonstrations right now.
+
+        Explicit for fixed/linear. For prefill it is the share D_off holds in
+        the uniformly sampled buffer, which decays as online data arrives.
+        """
+        if self.offline_buf is not None:
+            return float(self.offline_p)
+        if self.offline_prefill_slots:
+            return float(self.offline_prefill_slots) / max(float(self.replay_buffer.size()), 1.0)
+        return 0.0
+
+    def train(self, gradient_steps, batch_size=64):
+        """Upstream DSRL.train with two additions.
+
+        Batches come from ``_sample_batch`` (offline mix), and the last actor
+        step records the diagnostics that LoggingCallback writes to
+        train_log.csv. With offline_mix.mode=none the computation, and the
+        random stream, are identical to upstream.
+        """
+        from torch.nn import functional as F
+        from stable_baselines3.common.utils import polyak_update
+
+        self.policy.set_training_mode(True)
+        self.critic_noise.set_training_mode(True)
+        optimizers = [self.actor.optimizer, self.critic.optimizer, self.critic_noise.optimizer]
+        if self.ent_coef_optimizer is not None:
+            optimizers += [self.ent_coef_optimizer]
+        self._update_learning_rate(optimizers)
+
+        ent_coef_losses, ent_coefs = [], []
+        actor_losses, critic_losses, noise_critic_losses = [], [], []
+        diag = {}
+
+        if self.actor_gradient_steps < 0:
+            actor_gradient_idx = np.linspace(0, gradient_steps - 1, gradient_steps, dtype=int)
+        else:
+            actor_gradient_idx = np.linspace(
+                int(gradient_steps / self.actor_gradient_steps) - 1, gradient_steps - 1,
+                self.actor_gradient_steps, dtype=int,
+            )
+
+        for gradient_step in range(gradient_steps):
+            replay_data = self._sample_batch(batch_size)
+            if self.use_sde:
+                self.actor.reset_noise()
+
+            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            log_prob = log_prob.reshape(-1, 1)
+
+            ent_coef_loss = None
+            if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
+                ent_coef = th.exp(self.log_ent_coef.detach())
+                ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
+                ent_coef_losses.append(ent_coef_loss.item())
+            else:
+                ent_coef = self.ent_coef_tensor
+            ent_coefs.append(ent_coef.item())
+
+            if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
+                self.ent_coef_optimizer.zero_grad()
+                ent_coef_loss.backward()
+                self.ent_coef_optimizer.step()
+
+            with th.no_grad():
+                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
+                next_actions = th.tensor(self.policy.unscale_action(next_actions.cpu().numpy())).to(self.device)
+                next_actions = self.diffusion_policy(
+                    replay_data.next_observations,
+                    next_actions.reshape(-1, self.diffusion_act_chunk, self.diffusion_act_dim),
+                    return_numpy=False,
+                )
+                next_actions = next_actions.reshape(-1, self.diffusion_act_chunk * self.diffusion_act_dim)
+                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
+                if self.critic_backup_combine_type == "min":
+                    next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+                elif self.critic_backup_combine_type == "mean":
+                    next_q_values = th.mean(next_q_values, dim=1, keepdim=True)
+                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
+                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+
+            current_q_values = self.critic(replay_data.observations, replay_data.actions)
+            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
+            critic_losses.append(critic_loss.item())
+            self.critic.optimizer.zero_grad()
+            critic_loss.backward()
+            self.critic.optimizer.step()
+
+            if gradient_step in actor_gradient_idx:
+                q_values_pi = th.cat(self.critic_noise(replay_data.observations, actions_pi), dim=1)
+                if self.critic_backup_combine_type == "min":
+                    min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+                elif self.critic_backup_combine_type == "mean":
+                    min_qf_pi = th.mean(q_values_pi, dim=1, keepdim=True)
+                actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
+                actor_losses.append(actor_loss.item())
+
+                if gradient_step == gradient_steps - 1:
+                    # Diagnostics for the dip: where pi_W sits relative to the
+                    # N(0, I) prior pi_dp was trained with. w is tanh-bounded to
+                    # [-1, 1], so the pre-tanh mean and log-std are the direct
+                    # measure, and |w| > 0.9 is saturation, not a large noise.
+                    with th.no_grad():
+                        mean_actions, log_std, _ = self.actor.get_action_dist_params(replay_data.observations)
+                        diag = {
+                            "w_absmean": actions_pi.abs().mean().item(),
+                            "w_std": actions_pi.std(dim=0).mean().item(),
+                            "w_frac_sat": (actions_pi.abs() > 0.9).float().mean().item(),
+                            "mu_absmean": mean_actions.abs().mean().item(),
+                            "log_std_mean": log_std.mean().item(),
+                            "logp_mean": log_prob.mean().item(),
+                            "qw_mean": min_qf_pi.mean().item(),
+                        }
+
+                self.actor.optimizer.zero_grad()
+                actor_loss.backward()
+                self.actor.optimizer.step()
+
+            if gradient_step % self.target_update_interval == 0:
+                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
+                polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+
+        for gradient_step in range(self.noise_critic_grad_steps):
+            replay_data = self._sample_batch(batch_size)
+            critic_distill_loss = self.update_noise_critic(replay_data)
+            noise_critic_losses.append(critic_distill_loss.item())
+            self.critic_noise.optimizer.zero_grad()
+            critic_distill_loss.backward()
+            self.critic_noise.optimizer.step()
+
+        self.critic_noise.set_training_mode(False)
+        self._n_updates += gradient_steps
+
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/ent_coef", np.mean(ent_coefs))
+        self.logger.record("train/actor_loss", np.mean(actor_losses))
+        self.logger.record("train/critic_loss", np.mean(critic_losses))
+        self.logger.record("train/noise_critic_loss", np.mean(noise_critic_losses))
+        if len(ent_coef_losses) > 0:
+            self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
+        self.logger.record("train/offline_p", self.current_offline_share())
+        for key, value in diag.items():
+            self.logger.record("train/" + key, value)
 
 
 # --------------------------------------------------------------- config check
@@ -87,6 +254,14 @@ def config_fingerprint(cfg):
     if pretrain is not None:
         fingerprint["load_actor"] = bool(pretrain.get("load_actor", True))
         fingerprint["load_ent_coef"] = bool(pretrain.get("load_ent_coef", False))
+    mix = cfg.get("offline_mix", None)
+    if mix is not None:
+        mode = str(mix.get("mode", "none") or "none")
+        if mode in ("fixed", "linear"):
+            fingerprint["offline_mix"] = "%s:%s:%s:%s" % (
+                mode, mix.get("p0"), mix.get("p1"), mix.get("until_env"))
+        else:
+            fingerprint["offline_mix"] = mode
     return fingerprint
 
 
@@ -268,6 +443,101 @@ def load_pretrained_weights(model, path, cfg, variant, load_ent_coef=False, load
         model.log_ent_coef.data.copy_(payload["log_ent_coef"].to(model.device))
         loaded.append("log_ent_coef")
     return meta, loaded
+
+
+# --------------------------------------------------------------- offline mix
+
+def ratio_at(mix, env_steps_since_train_start):
+    """Share of each batch to draw from the demonstrations at this point.
+
+    ``mix`` is cfg.offline_mix. t is counted from the start of training, i.e.
+    after the initial rollout, so that the schedule lines up with the dip.
+    none and prefill return 0: prefill puts D_off into the online buffer
+    instead, and its share then decays on its own as online data arrives.
+    """
+    mode = str(mix.get("mode", "none") or "none") if mix is not None else "none"
+    if mode not in MIX_MODES:
+        raise ValueError("offline_mix.mode must be one of %s, got %r" % (", ".join(MIX_MODES), mode))
+    if mode in ("none", "prefill"):
+        return 0.0
+    p0 = float(mix.get("p0", 0.0))
+    if mode == "fixed":
+        return min(max(p0, 0.0), 1.0)
+    p1 = float(mix.get("p1", p0))
+    until = float(mix.get("until_env", 0) or 0)
+    t = max(float(env_steps_since_train_start), 0.0)
+    frac = 1.0 if until <= 0 else min(t / until, 1.0)
+    return min(max(p0 + (p1 - p0) * frac, 0.0), 1.0)
+
+
+def mixed_sample(online_buf, offline_buf, batch_size, p, env=None):
+    """A batch with round(p * batch_size) rows from the demonstrations.
+
+    Field by field concatenation; order inside a batch does not matter to
+    any of the losses, so there is no shuffle.
+    """
+    n_off = int(round(float(p) * batch_size))
+    n_off = min(max(n_off, 0), batch_size)
+    n_on = batch_size - n_off
+    if n_off == 0:
+        return online_buf.sample(batch_size, env=env)
+    if n_on == 0:
+        return offline_buf.sample(batch_size)
+    on = online_buf.sample(n_on, env=env)
+    off = offline_buf.sample(n_off)
+    return ReplayBufferSamples(*[th.cat([a, b], dim=0) for a, b in zip(on, off)])
+
+
+class OfflineBuffer:
+    """The chunked demonstrations as tensors, sampled uniformly.
+
+    Static and small (61,856 chunks, about 20 MB as float32), so it lives on
+    the device whole. Fields, dtypes and shapes match what the online
+    ReplayBuffer returns, so the two can be concatenated.
+    """
+
+    def __init__(self, npz_path, device):
+        with np.load(npz_path) as data:
+            states = np.asarray(data["states"], dtype=np.float32)
+            self.n = int(states.shape[0])
+            self.observations = th.as_tensor(states, device=device)
+            self.actions = th.as_tensor(np.asarray(data["actions"], dtype=np.float32), device=device)
+            self.next_observations = th.as_tensor(np.asarray(data["states_next"], dtype=np.float32), device=device)
+            self.dones = th.as_tensor(np.asarray(data["terminals"], dtype=np.float32).reshape(-1, 1), device=device)
+            self.rewards = th.as_tensor(np.asarray(data["rewards"], dtype=np.float32).reshape(-1, 1), device=device)
+        self.device = device
+
+    def sample(self, n):
+        idx = th.randint(0, self.n, (int(n),), device=self.device)
+        return ReplayBufferSamples(
+            self.observations[idx], self.actions[idx], self.next_observations[idx], self.dones[idx], self.rewards[idx]
+        )
+
+
+class OfflineRatioCallback(BaseCallback):
+    """Keeps model.offline_p on the schedule, in environment steps.
+
+    p is a pure function of the env-step count, so nothing needs saving for a
+    resume; it is also set on training start so the first update after a
+    resume does not run with the class default of 0.
+    """
+
+    def __init__(self, mix, logging_callback, train_start_env_steps, verbose=0):
+        super().__init__(verbose)
+        self.mix = mix
+        self.logging_callback = logging_callback
+        self.train_start_env_steps = int(train_start_env_steps)
+
+    def _update(self):
+        t = int(self.logging_callback.total_timesteps) - self.train_start_env_steps
+        self.model.offline_p = ratio_at(self.mix, t)
+
+    def _on_training_start(self):
+        self._update()
+
+    def _on_step(self):
+        self._update()
+        return True
 
 
 # ------------------------------------------------------------- reading state

@@ -128,6 +128,22 @@ pretrain:
   # variants then differ in nothing but how the critic was made.
   load_actor: True
 
+# Offline replay mix: how much of each training batch comes from the
+# demonstrations. none reproduces the runs made before this key existed.
+#   prefill  the upstream load_offline_data path: D_off goes into the online
+#            buffer once and its share then decays by itself (about 0.9 at the
+#            start of training to 0.4 at 300k on Can, since the buffer never
+#            wraps). train_log.csv records that share as offline_p.
+#   fixed    every batch has p0 of its rows from D_off.
+#   linear   p(t) = p0 + (p1 - p0) * min(t / until_env, 1), t counted in env
+#            steps from the start of training (after the initial rollout).
+# fixed and linear keep D_off in their own buffer; load_offline_data stays False.
+offline_mix:
+  mode: none # none | prefill | fixed | linear
+  p0: 0.5
+  p1: 0.1
+  until_env: 100000
+
 model:
   _target_: model.diffusion.diffusion_eval.DiffusionEval
   ft_denoising_steps: 0

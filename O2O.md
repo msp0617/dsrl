@@ -139,6 +139,63 @@ Whether the offline data also stays in the online replay buffer is a separate
 switch, `load_offline_data`, deliberately independent of the variant so that
 the critic-initialisation effect can be measured on its own.
 
+## Offline replay mix
+
+`offline_mix.mode` decides how much of each training batch comes from the
+demonstrations, the second axis of the study.
+
+| mode | what happens | share of a batch |
+|---|---|---|
+| `none` | upstream behaviour | 0 |
+| `prefill` | `load_offline_data`: D_off goes into the online buffer once | decays by itself: about 0.9 when training starts, 0.4 at 300k (the buffer never wraps, so D_off is never pushed out, only diluted) |
+| `fixed` | D_off in its own `OfflineBuffer`, `p0` of every batch from it | `p0` |
+| `linear` | same buffer, `p0 -> p1` over `until_env` env steps counted from the start of training, then `p1` | `p(t)` |
+
+So the paper's default, prefill, is already an implicit decaying schedule;
+fixed and linear make the schedule an explicit knob. `train_log.csv` records
+the share in effect as `offline_p`, for prefill too, so the implicit curve can
+be drawn next to the explicit ones.
+
+The mix is applied in `DSRLResumable.train`, an override of the upstream
+update that draws every batch (critic and actor share one, the noise critic
+draws its own) through `mixed_sample`. With `mode=none` the override does the
+same computation in the same order as upstream and consumes the random stream
+identically. p is a pure function of the env-step count, kept current by
+`OfflineRatioCallback`, so a resume needs no extra state; the mode and its
+parameters are part of the run fingerprint. `scripts/test_offline_mix.py`
+covers the schedule, the batch composition and the fingerprint without torch.
+
+## Diagnostics
+
+The dip has two candidate causes: an inaccurate critic (Q_W random at the
+start) or the actor leaving the noise prior pi_dp was trained with (DSRL
+starts with alpha = 1 and a target entropy of 0, and the entropy term
+dominates the first few thousand actor updates). `train_log.csv` carries what
+is needed to tell them apart, computed on the last actor step of each update:
+
+| column | meaning |
+|---|---|
+| `offline_p` | share of the batch from D_off in effect |
+| `w_absmean`, `w_std`, `w_frac_sat` | mean |w|, batch std of w, fraction of |w| > 0.9. w is tanh-bounded to [-1, 1], so the prior is left by saturating, not by growing |
+| `mu_absmean`, `log_std_mean` | the pre-tanh Gaussian: how far its mean has moved from 0 and its log-std from 0, the direct distance from N(0, I) |
+| `logp_mean` | log pi_W(w|s), the size of the entropy term |
+| `qw_mean` | Q_W(s, pi_W(s)) on the batch |
+
+`eval_log.csv` adds `mc_return`, the discounted return the evaluation
+episodes actually earn, and `q_start`, Q_W at their start states. Their gap
+measures Q over-estimation directly, but only once `ent_coef` is small: Q_W
+is a soft value and carries the entropy bonus while alpha is large, so the gap
+shrinking along the alpha curve is itself evidence for the entropy mechanism.
+
+`scripts/plot_results.py` draws the success curves (mean +- SE over seeds),
+the diagnostics and the Q gap per axis, and writes the dip metrics (depth,
+recovery step, AUC over the first 100k steps, final value, regret against the
+pi_dp reference from `base_policy_eval.csv`) to `metrics.csv`.
+
+CSV files keep the columns they were created with: a run resumed under newer
+code writes only the columns its file already has, so old and new runs stay
+readable side by side.
+
 The `.pt` carries a `meta` block with the method and the network fingerprint;
 a file made for another variant or another network shape is refused on load,
 and the run fingerprint includes the variant so a baseline checkpoint cannot be

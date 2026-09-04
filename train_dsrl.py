@@ -26,7 +26,10 @@ from env_utils import (
     make_robomimic_env,
 )
 from o2o_utils import (
+    MIX_MODES,
     VARIANTS,
+    OfflineBuffer,
+    OfflineRatioCallback,
     ResumeCheckpointCallback,
     build_agent,
     check_buffer_capacity,
@@ -99,6 +102,24 @@ def main(cfg: OmegaConf):
         raise ValueError("variant=%s needs pretrain_path=<file written by offline_pretrain.py>" % variant)
     if variant != "baseline" and not os.path.exists(pretrain_path):
         raise FileNotFoundError("pretrain_path does not exist: %s" % pretrain_path)
+
+    # Offline replay mix. prefill is the upstream load_offline_data path; fixed
+    # and linear sample the demonstrations from a separate buffer at a set
+    # share of each batch, so they must not also be put into the online buffer.
+    mix_cfg = cfg.get("offline_mix", None)
+    mix_mode = str(mix_cfg.get("mode", "none") or "none") if mix_cfg else "none"
+    if mix_mode not in MIX_MODES:
+        raise ValueError("offline_mix.mode must be one of %s, got %r" % (", ".join(MIX_MODES), mix_mode))
+    if mix_mode != "none" and not os.path.exists(str(cfg.offline_data_path)):
+        raise FileNotFoundError("offline_mix.mode=%s needs offline_data_path; not found: %s"
+                                % (mix_mode, cfg.offline_data_path))
+    if mix_mode in ("fixed", "linear") and cfg.algorithm != "dsrl_na":
+        raise NotImplementedError("offline_mix.mode=%s is written for dsrl_na" % mix_mode)
+    if mix_mode == "prefill":
+        cfg.load_offline_data = True
+    elif mix_mode != "none" and cfg.load_offline_data:
+        raise ValueError("offline_mix.mode=%s draws the demonstrations from its own buffer; "
+                         "set load_offline_data=False so they are not counted twice" % mix_mode)
 
     # A 10M-transition buffer costs several GB and makes checkpointing the
     # buffer impractical; size it to the run instead.
@@ -182,7 +203,17 @@ def main(cfg: OmegaConf):
         eval_every_env_early=eval_every_env_early,
         eval_early_until_env=eval_early_until_env,
         eval_episodes_early=int(num_evals_early / num_env_eval) if num_evals_early else 0,
+        discount=cfg.train.discount,
     )
+
+    train_start_env_steps = int(cfg.train.init_rollout_steps) * num_env * int(cfg.act_steps)
+    if mix_mode in ("fixed", "linear"):
+        model.offline_buf = OfflineBuffer(str(cfg.offline_data_path), model.device)
+        print("[mix] %s: %d demonstration chunks on %s, p starts at %.2f"
+              % (mix_mode, model.offline_buf.n, model.device, float(mix_cfg.get("p0", 0.0))), flush=True)
+    if cfg.load_offline_data:
+        with np.load(str(cfg.offline_data_path)) as data:
+            model.offline_prefill_slots = int(data["states"].shape[0]) // num_env
 
     state = None
     for candidate in candidates:
@@ -282,6 +313,9 @@ def main(cfg: OmegaConf):
     )
 
     callbacks = [checkpoint_callback, logging_callback]
+    if mix_mode in ("fixed", "linear"):
+        # After the logging callback, which advances the env-step count.
+        callbacks.append(OfflineRatioCallback(mix_cfg, logging_callback, train_start_env_steps))
     # Train the agent
     if learn_timesteps > 0:
         model.learn(

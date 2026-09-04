@@ -284,3 +284,40 @@ A100 처리량 run (`tput_can`, seed 0, rollout 3,200 + 학습 10,000 env step):
 3. 남은 크레딧
 
 코드 수정이 필요해지면 Claude Code(이 폴더)에서 하고 푸시한다. 채팅에서는 판단·분석·명령 작성까지.
+
+---
+
+## 13. 2026-09-04 오후 추가: 비율 스케줄 + 진단 로깅 (작업 지시서 WORK_ORDER.md 구현)
+
+포스터 마감 2026-09-09. 지시서의 두 가설: **H1** critic 부정확, **H2** actor가 N(0,I) prior 밖으로(α 과도기).
+지시서 대비 바뀐 점(작성자 동의): `w_frac_gt2` → `w_frac_sat`(|w|>0.9). w는 tanh로 [-1,1]에 묶여 |w|>2가 불가능.
+prior 이탈은 크기가 아니라 **분포가 좁아지고 ±1에 포화**하는 것으로 나타나며 tanh 이전 `mu_absmean`, `log_std_mean`이 직접 측정치.
+
+### 구현된 것 (커밋 참조 `git log`)
+- `offline_mix.mode` = none | prefill | fixed | linear (config, `o2o_utils.py`의 `ratio_at`, `mixed_sample`, `OfflineBuffer`, `OfflineRatioCallback`).
+  `DSRLResumable.train()`이 상류 `train()`을 오버라이드해 샘플 두 곳(critic·actor 공용 배치, noise critic 배치)을 `mixed_sample`로.
+  mode=none은 상류와 연산·난수 스트림이 동일. t=0은 학습 시작(초기 rollout 24,016 이후). resume 상태 없음. fingerprint에 mode·p0·p1·until 포함.
+- **prefill의 정체**: D_off 15,464 슬롯이 버퍼(50k 슬롯)에 들어가고 밀려나지 않으므로 균등 샘플링에서 비율이 약 0.91(학습 시작) → 0.43(300k)으로 **자연 감쇠**.
+  즉 논문 기본 세팅이 이미 암묵적 스케줄이고 linear는 기울기·도달점만 다른 것. 포스터 4번 패널 문구를 이렇게. `offline_p` 열이 prefill에서도 이 값을 기록.
+- `train_log.csv` 새 열: `offline_p, w_absmean, w_std, w_frac_sat, mu_absmean, log_std_mean, logp_mean, qw_mean` (마지막 actor 스텝에서 계산, 추가 forward 1회).
+- `eval_log.csv` 새 열: `mc_return`(평가 에피소드 실제 할인 리턴), `q_start`(같은 시작 상태의 Q_W). 격차 = Q 과대추정. **α < 0.1 이후에만 유효**(Q_W는 soft value).
+  격차가 α 곡선을 따라 줄면 "부풀림의 원인이 엔트로피 보너스"라는 H2 증거.
+- CSV 호환: 기존 파일은 자기 헤더의 열만 쓴다(resume된 옛 run에 새 열이 끼어들지 않음). 새 열은 새 run에서만.
+- `scripts/test_offline_mix.py` 12개(torch 없이). `scripts/plot_results.py`: 축별 success(mean±SE)·diagnostics·qgap PNG + `metrics.csv`(step0, dip 깊이, 회복 시점, AUC 0~100k, final, π_dp 대비 regret). 합성 데이터로 검증 완료.
+- 노트북 12b 셀에 `MIX` 변수(none|prefill|fixed|linear). MIX≠none이면 200k, exp_id는 `can_mix_<MIX>_s<seed>`(baseline) 또는 `can_<variant>_<MIX>_s<seed>`.
+
+### Colab 스모크 (9 run 띄우기 전 필수, 세 개)
+1. mode=none 회귀: 섹션 10 스모크 셀에 `exp_id=smoke_none`로 실행 → `train_log.csv`에 새 열이 채워지고 `offline_p`가 0인지.
+2. linear resume: 같은 셀에 `exp_id=smoke_mix offline_mix.mode=linear offline_mix.p0=0.8 offline_mix.p1=0.1 offline_mix.until_env=800 offline_data_path=$PROJ/offline/can_train_offline.npz` 로 1200스텝, 다시 2000스텝 → `[resume]` 뒤 `offline_p`가 이어지는지(0.8 → 0.1 감소).
+3. 진단 열이 NaN·상수가 아닌지 (`mu_absmean`, `log_std_mean`이 움직이는지).
+
+### 실험 매트릭스 (지시서 섹션 4)
+- 돌고 있음: `can_{baseline,warmup,iql}_s{1,2,3}` 300k (VM 1).
+- 고정 α 프로브(코드 불필요, VM 2): `exp_id=can_fixalpha_s1 variant=baseline train.ent_coef=0.01 train.total_env_steps=100000`.
+- 비율 축(스모크 통과 후, 토요일): baseline 200k × 3 seed × {prefill, fixed p0=0.5, linear 0.8→0.1 until 100k} = 9 run. 12b 셀 MIX로.
+- 교차(1 seed): `can_iql_linear_s1` = VARIANT=iql MIX=linear.
+- 선택: warmup critic-only `can_warmupc_s{1,2,3}`(섹션 2의 `pretrain.load_actor=False`), π_dp 기준선 `scripts/eval_base_policy.py`.
+
+### 분석 (일요일)
+`python scripts/plot_results.py --logs $PROJ/logs --out $PROJ/figures`. 축은 `--axes "critic=baseline,warmup,iql,fixalpha;mix=baseline,mix_prefill,mix_fixed,mix_linear,iql_linear"`.
+판정 규칙: dip 시점에 `mu_absmean`·`w_frac_sat` 급등 + `ent_coef` 아직 높음 → H2. w 얌전한데 `q_start − mc_return` 부풀어 있음 → H1. p 높은 run에서 `mu_absmean` 낮게 유지 → 비율이 H2 경로로 작동.

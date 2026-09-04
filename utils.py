@@ -71,8 +71,10 @@ class LoggingCallback(BaseCallback):
         eval_every_env_early=None,
         eval_early_until_env=0,
         eval_episodes_early=0,
+        discount=0.99,
     ):
         super().__init__(verbose)
+        self.discount = float(discount)
         self.action_chunk = action_chunk
         self.log_freq = log_freq
         self.episode_rewards = []
@@ -107,9 +109,19 @@ class LoggingCallback(BaseCallback):
         if self.csv_dir is None:
             return
         path = os.path.join(self.csv_dir, filename)
-        write_header = not os.path.exists(path)
+        # A resumed run keeps the columns its file already has, so a newer
+        # code version never writes rows wider than the header. New columns
+        # only appear in files created by this version.
+        fieldnames = list(row.keys())
+        write_header = True
+        if os.path.exists(path):
+            with open(path, newline="") as f:
+                header = f.readline().strip()
+            if header:
+                fieldnames = header.split(",")
+                write_header = False
         with open(path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore", restval="")
             if write_header:
                 writer.writeheader()
             writer.writerow(row)
@@ -217,6 +229,10 @@ class LoggingCallback(BaseCallback):
             "ent_coef": float(values.get('train/ent_coef', float('nan'))),
             "ent_coef_loss": float(values.get('train/ent_coef_loss', float('nan'))),
         }
+        # Offline-mix share and the dip diagnostics recorded by DSRLResumable.train.
+        for key in ("offline_p", "w_absmean", "w_std", "w_frac_sat", "mu_absmean",
+                    "log_std_mean", "logp_mean", "qw_mean"):
+            row[key] = float(values.get('train/' + key, float('nan')))
         self._csv_append("train_log.csv", row)
 
         if self.use_wandb:
@@ -250,10 +266,21 @@ class LoggingCallback(BaseCallback):
             success, rews = [], []
             rew_total, total_ep = 0, 0
             rew_ep = np.zeros(self.num_eval_env)
+            mc_returns, q_starts = [], []
             for i in range(episodes):
                 obs = env.reset()
                 success_i = np.zeros(obs.shape[0])
                 r = []
+                # Q_W(s0, pi_W(s0)) on the same start states the episode then
+                # plays out from, next to the discounted return it actually
+                # earns: their gap is the direct measure of Q over-estimation.
+                if self.algorithm == 'dsrl_na' and hasattr(agent, "critic_noise"):
+                    obs_t = torch.as_tensor(obs, device=agent.device, dtype=torch.float32)
+                    w0 = agent.actor(obs_t, deterministic=deterministic)
+                    q0 = torch.cat(agent.critic_noise(obs_t, w0), dim=1).min(dim=1)[0]
+                    q_starts.append(float(q0.mean().item()))
+                ret = np.zeros(obs.shape[0])
+                disc = 1.0
                 for _ in range(self.max_steps):
                     if self.algorithm == 'dsrl_sac':
                         action, _ = agent.predict(obs, deterministic=deterministic)
@@ -267,11 +294,16 @@ class LoggingCallback(BaseCallback):
                     total_ep += np.sum(done)
                     success_i[reward > -self.rew_offset] = 1
                     r.append(reward)
+                    ret += disc * reward
+                    disc *= self.discount
                 success.append(success_i.mean())
                 rews.append(np.mean(np.array(r)))
+                mc_returns.append(float(ret.mean()))
                 print(f'eval episode {i} at timestep {self.total_timesteps}', flush=True)
             success_rate = float(np.mean(success))
             avg_rew = float(rew_total / total_ep) if total_ep > 0 else 0.0
+            mc_return = float(np.mean(mc_returns)) if mc_returns else float('nan')
+            q_start = float(np.mean(q_starts)) if q_starts else float('nan')
 
             row = {
                 "wall_time": self._now(),
@@ -281,6 +313,8 @@ class LoggingCallback(BaseCallback):
                 "success_rate": success_rate,
                 "avg_reward": avg_rew,
                 "episodes": int(episodes * self.num_eval_env),
+                "mc_return": mc_return,
+                "q_start": q_start,
             }
             self._csv_append("eval_log.csv", row)
             print(
