@@ -633,7 +633,54 @@ done
 
 **판정 (`alpha_timing.py` + `ratio_ge_gq`)**: 감쇠율 3조건 + 스케일 4조건 = 7조건에서 첫 하락 시점의 `ratio_ge_gq`가 일정하면 비가 스위치 → 제어 대상은 Q 스케일(타깃 정규화/adaptive reward scale).
 hardq에서 dip이 얕아지면 제어기 없이 "초기 hard backup"이 방법. 둘 다 안 움직이면 두 번째 시계는 critic 학습 진행(데이터 양)이고 스케일은 결과.
-**게이트(NEXT_PHASE 3단계)는 이 결과 전에는 설계하지 않는다.**
+**게이트(NEXT_PHASE 3단계)는 이 결과 전에는 설계하지 않는다.** → 부품 교체형으로 미리 구현해 둠(섹션 18). 결과가 신호·작동기·τ를 정한다.
+
+## 18. 게이트 구현 (9/5 저녁, `o2o_utils.GateController`)
+
+config `gate:` (기본 `enabled: false`, 켜지 않으면 상류와 동일)
+| 키 | 뜻 |
+|---|---|
+| `signal` | `ratio`: `ratio_ge_gq`(엔트로피 기울기/Q 기울기)가 τ 아래로 K번 연속이면 열림. `clock`: `clock_calls`번 update 뒤 무조건 열림(대조군) |
+| `actuator` | 닫힌 동안 무엇을 붙드나. `hard_backup`: critic 타깃에서 엔트로피 보너스 제거(β=0), 열리면 β=`critic_entropy_scale`. `alpha_hold`: α=`alpha_hi` 고정, 열리면 auto-α가 `alpha_hi`에서 이어감 |
+| `tau`, `K`, `clock_calls`, `alpha_hi` | 임계, 연속 횟수(train() 호출 = 16 env step 단위), 시계, 고정 α |
+- 한 번 열리면 안 닫힘. 상태(`calls, streak, open, open_call`)는 `run_state.json`의 `gate`에 저장돼 resume에서 이어짐. 설정 전부 fingerprint.
+- `train_log.csv`에 `gate_open`(0/1), `gate_open_call`(열린 update 번호, 닫혀 있으면 −1).
+- 테스트: `test_offline_mix.py`에 상태기계 4개(K 연속, 위반 시 리셋·None 처리, clock, 상태 왕복·fingerprint), `test_resume_state.py`에 run_state 저장 1개.
+
+**스모크 (Colab, 5분)** — 게이트가 열리고 resume에서 이어지는지
+```python
+run_bash(r'''
+PROJ=/content/drive/MyDrive/dsrl_project
+git pull origin o2o | tail -n 1
+COMMON="log_dir=$PROJ/logs env.n_envs=1 env.n_eval_envs=1 num_evals=1 eval_schedule.every_env_early=400 eval_schedule.early_until_env=100000 eval_schedule.num_evals_early=1 ckpt_every_env_steps=400 train.init_rollout_steps=50 train.utd=1 train.noise_critic_grad_steps=1 train.batch_size=32 train.layer_size=256 train.num_layers=2 train.buffer_size=20000"
+G="gate.enabled=true gate.signal=ratio gate.actuator=hard_backup gate.tau=20 gate.K=3"
+rm -rf $PROJ/logs/smoke_gate
+python train_dsrl.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml exp_id=smoke_gate $COMMON $G train.total_env_steps=1200 2>&1 | grep "\[done\]\|Error"
+python train_dsrl.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml exp_id=smoke_gate $COMMON $G train.total_env_steps=2000 2>&1 | grep "\[resume\]\|\[done\]\|Error"
+cut -d, -f2,11,20,24,25,26 $PROJ/logs/smoke_gate/train_log.csv
+python -c "import json;print(json.load(open('$PROJ/logs/smoke_gate/checkpoint/run_state.json'))['gate'])"
+''')
+```
+합격: `qw_mean`이 닫힌 동안 음수(hard backup), `gate_open`이 0에서 1로 바뀌고 `gate_open_call`이 고정값, resume 뒤에도 1 유지, `run_state.json`의 `gate.open` true.
+
+**본 실험 (Q 스케일 결과 뒤, 100k, 5 seed, 평가 2.5k)**
+```bash
+%%bash
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl
+source /content/env.sh
+cd /content/dsrl
+git pull origin o2o | tail -n 1
+PROJ=/content/drive/MyDrive/dsrl_project
+CFG="--config-path=cfg/robomimic --config-name=dsrl_can.yaml"
+COMMON="log_dir=$PROJ/logs variant=baseline train.total_env_steps=100000 eval_schedule.every_env_early=2500"
+launch () { EXP=$1; shift; nohup python train_dsrl.py $CFG exp_id=$EXP "$@" $COMMON > $PROJ/logs/$EXP.out 2>&1 & echo "started $EXP (pid $!)"; }
+TAU=1.0   # 7조건의 첫 하락 시 ratio_ge_gq로 정한다
+for S in 1 2 3 4 5; do
+  launch can_gate_sig_s$S seed=$S gate.enabled=true gate.signal=ratio gate.actuator=hard_backup gate.tau=$TAU gate.K=50
+done
+```
+signal 5개의 `gate_open_call` 평균 N*이 나오면 대조군: `gate.signal=clock gate.clock_calls=N*`로 `can_gate_clk_s{1..5}`. 판정은 NEXT_PHASE.md 3단계 표(sig > clk이면 능동 조절 성립).
+작동기를 `alpha_hold`로 바꾸려면 `gate.actuator=alpha_hold gate.alpha_hi=<α 스윕 최적>`.
 
 π_dp 기준선 (9/5 아침 최우선, 빈 VM 어디서든, seed당 3~5분, 500 에피소드면 약 10분):
 ```python
