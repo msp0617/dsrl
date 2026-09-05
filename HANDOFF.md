@@ -580,6 +580,61 @@ done
 `--axes "critic=baseline,warmup,iql,warmupc,fixalpha;mix=baseline,mix_prefill,mix_fixed,mix_linear,iql_linear;square=square_baseline,square_iql,square_warmupc,square_warmup,square_mix_prefill"`.
 Square π_dp 기준선: `python scripts/eval_base_policy.py --config-name=dsrl_square.yaml seed=$S num_evals=500 log_dir=$PROJ/logs` (seed 1~3) → `base_policy_eval_square.csv`.
 
+## 17. Q 스케일 가설 검정 (NEXT_PHASE_v2, 9/5 저녁 구현)
+
+감쇠율 실험의 비대칭(double은 5k 앞당김, half는 첫 하락 안 밀림)을 설명할 가설: 스위치는 α 단독이 아니라 **actor에 걸리는 두 기울기의 균형**.
+주의: `qw_mean`의 +55~+175는 보상이 전부 ≤0인데도 양수이므로 critic 타깃의 엔트로피 보너스가 쌓인 **오프셋**이다. 오프셋은 w에 거의 무관해 argmax를 옮기지 않는다.
+그래서 값의 비(`α|log π| / |Q_W|`)가 아니라 **기울기 노름의 비**를 잰다.
+
+**구현 (커밋 참조, 전부 `DSRLResumable.train`·config·fingerprint)**
+- `train.reward_scale` c: 타깃의 r만 c배(로깅된 보상·성공률은 그대로, `q_start`·`qw_mean`은 c배로 나옴).
+- `train.critic_entropy_scale` β: 타깃의 `α·log π'` 보너스 배율. β=0이면 hard backup(오프셋 인플레이션 제거).
+- `train_log.csv` 새 열: `qw_absmean`, `gq_norm`(‖∂(−Q_W)/∂u‖), `ge_norm`(‖∂(α log π)/∂u‖), `ratio_ge_gq`. u는 tanh 이전 샘플. 마지막 actor 스텝에서 backward 두 번 추가, 난수 소비 없음.
+- 둘 다 1.0이면 상류와 동일 연산(곱셈을 건너뜀). `plot_results.py`에 `sweep`, `scale` 축과 3×3 진단 패널.
+
+**스모크 (띄우기 전 필수, 아무 VM, 5분)**
+```python
+run_bash(r'''
+PROJ=/content/drive/MyDrive/dsrl_project
+git pull origin o2o | tail -n 1
+COMMON="log_dir=$PROJ/logs env.n_envs=1 env.n_eval_envs=1 num_evals=1 eval_schedule.every_env_early=400 eval_schedule.early_until_env=100000 eval_schedule.num_evals_early=1 ckpt_every_env_steps=400 train.init_rollout_steps=50 train.utd=1 train.noise_critic_grad_steps=1 train.batch_size=32 train.layer_size=256 train.num_layers=2 train.buffer_size=20000 train.total_env_steps=1200 resume=False"
+python train_dsrl.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml exp_id=smoke_scale $COMMON train.reward_scale=2.0 train.critic_entropy_scale=0.0 2>&1 | grep "\[eval\]\|\[done\]\|Error"
+head -n 1 $PROJ/logs/smoke_scale/train_log.csv | tr ',' '\n' | grep -n "gq_norm\|ratio_ge_gq\|qw_absmean"
+cut -d, -f2,20-24 $PROJ/logs/smoke_scale/train_log.csv
+''')
+```
+합격: `gq_norm`, `ge_norm`, `ratio_ge_gq`, `qw_absmean` 열이 있고 숫자(NaN 아님), `ratio_ge_gq`가 행마다 변함.
+
+**매트릭스 (Can, baseline, 150k, 3 seed, 평가 2.5k 격자) — VM 1·2가 비는 밤 9시에**
+| exp_id | override | 예측(비가 스위치라면) |
+|---|---|---|
+| `can_rs_025_s{1,2,3}` | `train.reward_scale=0.25` | 보상 기울기 ↓ → dip 뒤로 |
+| `can_rs_05_s{1,2,3}` | `train.reward_scale=0.5` | 약간 뒤로 |
+| `can_rs_2_s{1,2,3}` | `train.reward_scale=2.0` | dip 앞으로 |
+| `can_hardq_s{1,2,3}` | `train.critic_entropy_scale=0` | 오프셋 인플레이션 제거. dip이 변하면 보너스가 원인 |
+```bash
+%%bash
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl
+source /content/env.sh
+cd /content/dsrl
+git pull origin o2o | tail -n 1
+PROJ=/content/drive/MyDrive/dsrl_project
+CFG="--config-path=cfg/robomimic --config-name=dsrl_can.yaml"
+COMMON="log_dir=$PROJ/logs variant=baseline train.total_env_steps=150000 eval_schedule.every_env_early=2500"
+launch () { EXP=$1; shift; nohup python train_dsrl.py $CFG exp_id=$EXP "$@" $COMMON > $PROJ/logs/$EXP.out 2>&1 & echo "started $EXP (pid $!)"; }
+for S in 1 2 3; do
+  launch can_rs_025_s$S seed=$S train.reward_scale=0.25
+  launch can_rs_05_s$S  seed=$S train.reward_scale=0.5
+  launch can_rs_2_s$S   seed=$S train.reward_scale=2.0
+  launch can_hardq_s$S  seed=$S train.critic_entropy_scale=0.0
+done
+```
+12개면 RAM 약 215GB라 **한 VM에 못 얹는다**. VM 1에 9개(rs 3종), VM 2에 3개(hardq) 또는 6/6.
+
+**판정 (`alpha_timing.py` + `ratio_ge_gq`)**: 감쇠율 3조건 + 스케일 4조건 = 7조건에서 첫 하락 시점의 `ratio_ge_gq`가 일정하면 비가 스위치 → 제어 대상은 Q 스케일(타깃 정규화/adaptive reward scale).
+hardq에서 dip이 얕아지면 제어기 없이 "초기 hard backup"이 방법. 둘 다 안 움직이면 두 번째 시계는 critic 학습 진행(데이터 양)이고 스케일은 결과.
+**게이트(NEXT_PHASE 3단계)는 이 결과 전에는 설계하지 않는다.**
+
 π_dp 기준선 (9/5 아침 최우선, 빈 VM 어디서든, seed당 3~5분, 500 에피소드면 약 10분):
 ```python
 run_bash(r'''
