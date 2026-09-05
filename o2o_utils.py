@@ -141,6 +141,9 @@ class DSRLResumable(DSRL):
 
             actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
             log_prob = log_prob.reshape(-1, 1)
+            # The pre-tanh sample behind actions_pi. Taken now because the
+            # next-state call below overwrites the distribution's copy.
+            u_pi = getattr(self.actor.action_dist, "gaussian_actions", None)
 
             ent_coef_loss = None
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
@@ -217,7 +220,7 @@ class DSRLResumable(DSRL):
                     # The value of Q_W is mostly an offset and says nothing about
                     # this; the gradients do. Two extra backward passes per
                     # update, on a graph that is kept for the actor step below.
-                    u = getattr(self.actor.action_dist, "gaussian_actions", None)
+                    u = u_pi
                     if u is not None and u.requires_grad:
                         g_q = th.autograd.grad((-min_qf_pi).sum(), u, retain_graph=True)[0]
                         g_e = th.autograd.grad((ent_coef * log_prob).sum(), u, retain_graph=True)[0]
