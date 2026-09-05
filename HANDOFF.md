@@ -11,9 +11,9 @@
 
 논문 DSRL(Wagenmaker et al. 2025, arXiv:2506.15799)의 offline-to-online 초기 성능 dip이
 **critic 초기화** 때문인지, IQL로 critic을 미리 만들면 줄어드는지 robomimic Can에서 실험한다.
-**2026-09-05 아침 기준: 29 run 중 26개 완료, `can_mix_linear_s{1,2,3}`만 VM 1에서 돌고 있다(12:00 KST 완료 예정).**
-π_dp 기준선(0.405)과 첫 그림·`metrics.csv`가 나왔고 결과 해석은 **섹션 15**에 있다. 남은 것은 linear 반영 → 그림 재생성 → 포스터(일요일, 마감 2026-09-09 수).
-잔여 크레딧 약 367. VM 2·3은 반납됨. 새 VM은 캐시 복원으로 10분(섹션 3).
+**2026-09-05 밤 22:00 기준: 축 A·B·Square·감쇠율·α 스윕까지 53 run 완료(섹션 15·16), Q 스케일 9 run이 VM 2에서 도는 중(섹션 17 끝의 "9/5 밤 상태").**
+π_dp 기준선(0.405), 그림, `metrics.csv`, 해석은 **섹션 15**. 내일(9/6 일) 아침 CSV 묶음 → `alpha_timing.py`로 τ 확정 → 게이트 signal/clock(섹션 18) → 저녁 완료. 월·화 포스터(마감 2026-09-09 수).
+잔여 크레딧 약 140(22:00 추정). VM 1은 반납됨, VM 2는 자동 반납 keepalive. 새 VM은 캐시 복원으로 10분(섹션 3).
 
 ---
 
@@ -634,6 +634,34 @@ done
 **판정 (`alpha_timing.py` + `ratio_ge_gq`)**: 감쇠율 3조건 + 스케일 4조건 = 7조건에서 첫 하락 시점의 `ratio_ge_gq`가 일정하면 비가 스위치 → 제어 대상은 Q 스케일(타깃 정규화/adaptive reward scale).
 hardq에서 dip이 얕아지면 제어기 없이 "초기 hard backup"이 방법. 둘 다 안 움직이면 두 번째 시계는 critic 학습 진행(데이터 양)이고 스케일은 결과.
 **게이트(NEXT_PHASE 3단계)는 이 결과 전에는 설계하지 않는다.** → 부품 교체형으로 미리 구현해 둠(섹션 18). 결과가 신호·작동기·τ를 정한다.
+
+### 9/5 밤 상태 (22:00 KST)
+- 오후 15 run 전부 `[done]`: `square_mix_prefill_s{1,2,3}`(150k), `can_fixalpha_{01,03,003,1}_s{1,2,3}`(150k). CSV는 아직 로컬로 안 받음.
+- α 스윕 첫인상(129k 성공률 seed 평균): 0.03 → 0.41, 0.1 → 0.63, 0.3 → **0.72**, 1.0 → 0.15. 고정 α는 0.3이 최적, 1.0은 무작위성 과다로 학습 안 됨. `alpha_hold` 작동기를 쓴다면 `gate.alpha_hi=0.3`.
+- 22:00 VM 2에 **9 run 시작** (rs_05는 크레딧 때문에 뺌, 100k, 평가 2.5k 격자): `can_rs_025_s{1,2,3}`, `can_rs_2_s{1,2,3}`, `can_hardq_s{1,2,3}`. 코드 84dc2af. step-0 성공률은 조건과 무관하게 seed별로 같고(s1 0.71, s2 0.55, s3 0.37) 로깅된 보상은 −240 그대로 → reward_scale이 타깃에만 들어감을 확인. 자동 반납 keepalive 실행 중, 새벽 2~3시 완료 예상.
+- **`ratio_ge_gq`·`gq_norm`·`ge_norm`·`qw_absmean` 열은 이 9 run에만 있다.** baseline·alr·fixalpha·Square는 진단 패치(21cef73) 전에 돌아서 없다. 따라서 "첫 하락 시 ratio" 비교는 rs_025 / rs_2 / hardq 세 조건(9점)으로 하고, baseline 스케일의 ratio는 rs_025와 rs_2 사이로 내삽하거나 게이트 signal run 자체(스케일 1, ratio 로깅됨)에서 읽는다.
+
+### 9/6(일) 아침 순서
+1. 새 VM(0 → 1 → 2 → 3 → 5b → 6 → 7 → 7b → 8 → 9). CSV 묶음 zip → 로컬.
+   ```python
+   run_bash(r'''
+   cd /content/drive/MyDrive/dsrl_project
+   rm -f csv_bundle.zip
+   zip -qr csv_bundle.zip logs -i "logs/*/eval_log.csv" "logs/*/train_log.csv" "logs/*.csv"
+   ls -la csv_bundle.zip
+   ''')
+   ```
+2. 로컬 분석 (`.venv\Scripts\python`, `scripts/` 안에서):
+   ```
+   cd scripts
+   ..\.venv\Scripts\python alpha_timing.py --logs <logs> --out <figs> --groups alr_double,baseline,alr_half,rs_025,rs_2,hardq
+   ..\.venv\Scripts\python plot_results.py --logs <logs> --out <figs> --axes scale,sweep
+   ```
+   `alpha_timing.py`는 이제 run별로 `ratio_below_{3,1,0.3}`(ratio가 처음 그 값 아래로 간 env step, 3행 이동중앙값), `ratio_ge_gq_at_first_below`, `ent_coef_at_first_below`, `qw_absmean_at_first_below`를 내고, 마지막에 "첫 하락 시점에서 어느 양이 일정한가"를 log10 표준편차(spread)로 찍는다. `ratio_timing.png`도 씀.
+   **판정**: (i) rs_025의 첫 하락이 baseline(34k)보다 뒤, rs_2가 앞이면 Q 스케일이 dip 시점을 움직인다. (ii) 그때 `ratio_ge_gq_at_first_below`의 spread가 `ent_coef_at_first_below`의 spread보다 작으면 비가 스위치 → τ = 그 중앙값. (iii) hardq의 dip이 얕으면 hard backup 자체가 처방이고 게이트 작동기는 `hard_backup`으로 확정.
+3. τ 확정 → 섹션 18 본 실험 셀에 `TAU=` 넣고 `can_gate_sig_s{1..5}` (5 run, 100k, 약 4시간). keepalive 반납 없는 버전.
+4. signal 5개의 `gate_open_call` 평균 N* → `can_gate_clk_s{1..5}` (`gate.signal=clock gate.clock_calls=N*`). 크레딧이 모자라면 clock은 3 seed.
+5. 그림·표 재생성, 섹션 15 갱신, 포스터.
 
 ## 18. 게이트 구현 (9/5 저녁, `o2o_utils.GateController`)
 
