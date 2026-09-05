@@ -189,13 +189,30 @@ class Cfg(dict):
     __getattr__ = dict.__getitem__
 
 
-def make_cfg(mode="none"):
+def make_cfg(mode="none", ent_coef_lr=-1):
     return Cfg(
         algorithm="dsrl_na", env_name="can", obs_dim=23, action_dim=7, act_steps=4,
-        train=Cfg(layer_size=2048, num_layers=3, n_critics=2, use_layer_norm=True, buffer_size=200000),
+        train=Cfg(layer_size=2048, num_layers=3, n_critics=2, use_layer_norm=True, buffer_size=200000,
+                  ent_coef=-1, target_ent=0.0, ent_coef_lr=ent_coef_lr),
         env=Cfg(n_envs=4), variant="baseline",
         offline_mix=Cfg(mode=mode, p0=0.8, p1=0.1, until_env=100000),
     )
+
+
+def test_fingerprint_carries_the_alpha_learning_rate():
+    assert o2o_utils.config_fingerprint(make_cfg())["ent_coef_lr"] == -1
+    assert o2o_utils.config_fingerprint(make_cfg(ent_coef_lr=1.5e-4))["ent_coef_lr"] == 1.5e-4
+    old = {"config": o2o_utils.config_fingerprint(make_cfg(ent_coef_lr=1.5e-4))}
+    try:
+        o2o_utils.check_fingerprint(old, make_cfg())
+    except RuntimeError:
+        return
+    raise AssertionError("a half-rate checkpoint resumed under the shared rate")
+
+
+def test_decoupled_alpha_optimizer_stays_out_of_the_lr_reset():
+    # The class default means "shared", which is what upstream does.
+    assert o2o_utils.DSRLResumable.ent_coef_lr is None
 
 
 def test_fingerprint_carries_the_schedule_only_when_it_matters():

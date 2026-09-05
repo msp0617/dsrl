@@ -94,6 +94,10 @@ train:
   discount: 0.999
   ent_coef: -1
   target_ent: 0.0
+  # Learning rate of the alpha optimizer alone; -1 shares actor_lr (upstream).
+  # log(alpha) falls about ent_coef_lr per gradient step, so halving it
+  # doubles the time until alpha < 0.1 (the point the dip is tied to).
+  ent_coef_lr: -1
   init_rollout_steps: 2001 # 2001 x 4 envs x 4 chunk = 32,016 env steps, the paper's "initial steps 32000"
   action_magnitude: 1.5 # Maximum action magnitude in noise action space
   n_critics: 2 # Number of critic Q networks

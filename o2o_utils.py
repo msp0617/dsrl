@@ -58,6 +58,13 @@ class DSRLResumable(DSRL):
     offline_buf = None  # OfflineBuffer when mode is fixed/linear
     offline_p = 0.0  # share of each batch drawn from offline_buf
     offline_prefill_slots = 0  # buffer slots D_off occupies when mode is prefill
+    # Learning rate of the entropy-coefficient optimizer when it is decoupled
+    # from the actor/critic rate (train.ent_coef_lr > 0). Upstream shares one
+    # rate, and _update_learning_rate resets it every update, so a decoupled
+    # optimizer must be kept out of that reset. The rate sets how fast alpha
+    # decays: with Adam, log(alpha) moves about lr per gradient step while the
+    # entropy sits above its target.
+    ent_coef_lr = None
 
     def _excluded_save_params(self):
         return super()._excluded_save_params() + ["diffusion_policy", "offline_buf"]
@@ -101,7 +108,7 @@ class DSRLResumable(DSRL):
         self.policy.set_training_mode(True)
         self.critic_noise.set_training_mode(True)
         optimizers = [self.actor.optimizer, self.critic.optimizer, self.critic_noise.optimizer]
-        if self.ent_coef_optimizer is not None:
+        if self.ent_coef_optimizer is not None and self.ent_coef_lr is None:
             optimizers += [self.ent_coef_optimizer]
         self._update_learning_rate(optimizers)
 
@@ -253,6 +260,7 @@ def config_fingerprint(cfg):
         # (total_env_steps) is deliberately left out so a run can be extended.
         "ent_coef": float(cfg.train.get("ent_coef", -1)),
         "target_ent": float(cfg.train.get("target_ent", -1)),
+        "ent_coef_lr": float(cfg.train.get("ent_coef_lr", -1) or -1),
     })
     pretrain = cfg.get("pretrain", None)
     if pretrain is not None:
@@ -364,7 +372,7 @@ def build_agent(cfg, env, base_policy, buffer_size, replay_buffer_kwargs=None,
     if cfg.algorithm == "dsrl_sac":
         return SAC("MlpPolicy", env, **common)
     if cfg.algorithm == "dsrl_na":
-        return DSRLResumable(
+        model = DSRLResumable(
             "MlpPolicy",
             env,
             diffusion_policy=base_policy,
@@ -373,6 +381,11 @@ def build_agent(cfg, env, base_policy, buffer_size, replay_buffer_kwargs=None,
             critic_backup_combine_type=cfg.train.critic_backup_combine_type,
             **common,
         )
+        ent_coef_lr = float(cfg.train.get("ent_coef_lr", -1) or -1)
+        if ent_coef_lr > 0 and model.ent_coef_optimizer is not None:
+            model.ent_coef_optimizer = th.optim.Adam([model.log_ent_coef], lr=ent_coef_lr)
+            model.ent_coef_lr = ent_coef_lr
+        return model
     raise ValueError("unknown algorithm %r" % cfg.algorithm)
 
 

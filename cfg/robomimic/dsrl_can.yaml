@@ -101,6 +101,10 @@ train:
   discount: 0.99
   ent_coef: -1
   target_ent: 0.0
+  # Learning rate of the alpha optimizer alone; -1 shares actor_lr (upstream).
+  # log(alpha) falls about ent_coef_lr per gradient step, so halving it
+  # doubles the time until alpha < 0.1 (the point the dip is tied to).
+  ent_coef_lr: -1
   init_rollout_steps: 1501 # Number of rollout steps of standard diffusion policy to collect for replay buffer before training starts
   action_magnitude: 1.5 # Maximum action magnitude in noise action space
   n_critics: 2 # Number of critic Q networks

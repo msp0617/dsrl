@@ -34,6 +34,7 @@ DEFAULT_AXES = {
     "critic": ["baseline", "warmup", "iql", "warmupc", "fixalpha"],
     "mix": ["baseline", "mix_prefill", "mix_fixed", "mix_linear", "iql_linear", "iql_prefill"],
     "square": ["square_baseline"],
+    "alpha": ["baseline", "alr_half", "alr_double", "fixalpha"],
 }
 DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean", "offline_p", "qw_mean"]
 
