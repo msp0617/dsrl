@@ -65,6 +65,16 @@ class DSRLResumable(DSRL):
     # decays: with Adam, log(alpha) moves about lr per gradient step while the
     # entropy sits above its target.
     ent_coef_lr = None
+    # Two levers on the critic target, both 1.0 upstream:
+    #   reward_scale         r -> c * r, scales the reward-driven part of Q (and
+    #                        its gradient w.r.t. w) without touching the entropy
+    #                        bonus; success rate and the logged returns are not
+    #                        scaled, only Q values are.
+    #   critic_entropy_scale beta in next_q - beta * alpha * log pi(a'|s'); 0 is a
+    #                        hard backup, which removes the alpha-driven offset
+    #                        that makes early Q_W positive.
+    reward_scale = 1.0
+    critic_entropy_scale = 1.0
 
     def _excluded_save_params(self):
         return super()._excluded_save_params() + ["diffusion_policy", "offline_buf"]
@@ -160,8 +170,14 @@ class DSRLResumable(DSRL):
                     next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
                 elif self.critic_backup_combine_type == "mean":
                     next_q_values = th.mean(next_q_values, dim=1, keepdim=True)
-                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                bonus = ent_coef * next_log_prob.reshape(-1, 1)
+                if self.critic_entropy_scale != 1.0:
+                    bonus = self.critic_entropy_scale * bonus
+                next_q_values = next_q_values - bonus
+                rewards = replay_data.rewards
+                if self.reward_scale != 1.0:
+                    rewards = self.reward_scale * rewards
+                target_q_values = rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
             current_q_values = self.critic(replay_data.observations, replay_data.actions)
             critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
@@ -194,7 +210,22 @@ class DSRLResumable(DSRL):
                             "log_std_mean": log_std.mean().item(),
                             "logp_mean": log_prob.mean().item(),
                             "qw_mean": min_qf_pi.mean().item(),
+                            "qw_absmean": min_qf_pi.abs().mean().item(),
                         }
+                    # Which term is steering the actor: the gradient of -Q_W and
+                    # of alpha * log pi with respect to the pre-tanh sample u.
+                    # The value of Q_W is mostly an offset and says nothing about
+                    # this; the gradients do. Two extra backward passes per
+                    # update, on a graph that is kept for the actor step below.
+                    u = getattr(self.actor.action_dist, "gaussian_actions", None)
+                    if u is not None and u.requires_grad:
+                        g_q = th.autograd.grad((-min_qf_pi).sum(), u, retain_graph=True)[0]
+                        g_e = th.autograd.grad((ent_coef * log_prob).sum(), u, retain_graph=True)[0]
+                        gq = g_q.norm(dim=1).mean().item()
+                        ge = g_e.norm(dim=1).mean().item()
+                        diag["gq_norm"] = gq
+                        diag["ge_norm"] = ge
+                        diag["ratio_ge_gq"] = ge / gq if gq > 0 else float("nan")
 
                 self.actor.optimizer.zero_grad()
                 actor_loss.backward()
@@ -261,6 +292,8 @@ def config_fingerprint(cfg):
         "ent_coef": float(cfg.train.get("ent_coef", -1)),
         "target_ent": float(cfg.train.get("target_ent", -1)),
         "ent_coef_lr": float(cfg.train.get("ent_coef_lr", -1) or -1),
+        "reward_scale": float(cfg.train.get("reward_scale", 1.0)),
+        "critic_entropy_scale": float(cfg.train.get("critic_entropy_scale", 1.0)),
     })
     pretrain = cfg.get("pretrain", None)
     if pretrain is not None:
@@ -385,6 +418,8 @@ def build_agent(cfg, env, base_policy, buffer_size, replay_buffer_kwargs=None,
         if ent_coef_lr > 0 and model.ent_coef_optimizer is not None:
             model.ent_coef_optimizer = th.optim.Adam([model.log_ent_coef], lr=ent_coef_lr)
             model.ent_coef_lr = ent_coef_lr
+        model.reward_scale = float(cfg.train.get("reward_scale", 1.0))
+        model.critic_entropy_scale = float(cfg.train.get("critic_entropy_scale", 1.0))
         return model
     raise ValueError("unknown algorithm %r" % cfg.algorithm)
 

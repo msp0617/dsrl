@@ -105,6 +105,12 @@ train:
   # log(alpha) falls about ent_coef_lr per gradient step, so halving it
   # doubles the time until alpha < 0.1 (the point the dip is tied to).
   ent_coef_lr: -1
+  # Critic-target levers for the Q-scale hypothesis (both 1.0 = upstream).
+  # reward_scale multiplies r in the target only (logged returns are not
+  # scaled); critic_entropy_scale multiplies the alpha * log pi bonus in the
+  # target, 0 being a hard backup.
+  reward_scale: 1.0
+  critic_entropy_scale: 1.0
   init_rollout_steps: 1501 # Number of rollout steps of standard diffusion policy to collect for replay buffer before training starts
   action_magnitude: 1.5 # Maximum action magnitude in noise action space
   n_critics: 2 # Number of critic Q networks

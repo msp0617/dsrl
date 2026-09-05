@@ -35,8 +35,11 @@ DEFAULT_AXES = {
     "mix": ["baseline", "mix_prefill", "mix_fixed", "mix_linear", "iql_linear", "iql_prefill"],
     "square": ["square_baseline"],
     "alpha": ["baseline", "alr_half", "alr_double", "fixalpha"],
+    "sweep": ["baseline", "fixalpha", "fixalpha_003", "fixalpha_01", "fixalpha_03", "fixalpha_1"],
+    "scale": ["baseline", "rs_025", "rs_05", "rs_2", "hardq"],
 }
-DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean", "offline_p", "qw_mean"]
+DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean", "offline_p", "qw_mean",
+             "ratio_ge_gq", "gq_norm"]
 
 
 # ------------------------------------------------------------------ loading
@@ -187,7 +190,7 @@ def plot_diagnostics(fig_axes, runs, groups):
     for ax, col in zip(fig_axes, DIAG_COLS):
         ax.set_title(col, fontsize=9)
         ax.grid(alpha=0.3)
-        if col == "ent_coef":
+        if col in ("ent_coef", "ratio_ge_gq", "gq_norm"):
             ax.set_yscale("log")
     fig_axes[0].legend(fontsize=7)
 
@@ -279,10 +282,9 @@ def main():
         fig.savefig(os.path.join(args.out, "success_%s.png" % name), dpi=150)
         plt.close(fig)
 
-        fig, fig_axes = plt.subplots(2, 4, figsize=(14, 6))
+        fig, fig_axes = plt.subplots(3, 3, figsize=(14, 9))
         fig_axes = fig_axes.ravel()
         plot_diagnostics(fig_axes, runs, present)
-        fig_axes[-1].axis("off")
         fig.suptitle("diagnostics, axis: %s" % name)
         fig.tight_layout()
         fig.savefig(os.path.join(args.out, "diagnostics_%s.png" % name), dpi=150)

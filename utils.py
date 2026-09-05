@@ -231,7 +231,7 @@ class LoggingCallback(BaseCallback):
         }
         # Offline-mix share and the dip diagnostics recorded by DSRLResumable.train.
         for key in ("offline_p", "w_absmean", "w_std", "w_frac_sat", "mu_absmean",
-                    "log_std_mean", "logp_mean", "qw_mean"):
+                    "log_std_mean", "logp_mean", "qw_mean", "qw_absmean", "gq_norm", "ge_norm", "ratio_ge_gq"):
             row[key] = float(values.get('train/' + key, float('nan')))
         self._csv_append("train_log.csv", row)
 
