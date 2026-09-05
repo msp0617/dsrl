@@ -121,6 +121,21 @@ pretrain:
   load_ent_coef: False
   load_actor: True
 
+# Gate (o2o_utils.GateController): hold one lever until the critic looks
+# trustworthy, then release it for good. signal=ratio opens when the actor's
+# entropy-gradient / Q-gradient ratio (train_log ratio_ge_gq) stays below tau
+# for K consecutive updates; signal=clock opens after clock_calls updates and
+# is the control. actuator=hard_backup drops the entropy bonus from the critic
+# target while closed; actuator=alpha_hold pins alpha at alpha_hi while closed.
+gate:
+  enabled: false
+  signal: ratio # ratio | clock
+  actuator: hard_backup # hard_backup | alpha_hold
+  tau: 1.0
+  K: 50
+  clock_calls: 0
+  alpha_hi: 0.3
+
 offline_mix:
   mode: none # none | prefill | fixed | linear (all but none need offline_data_path, which Square does not have yet)
   p0: 0.5

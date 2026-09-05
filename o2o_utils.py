@@ -75,9 +75,17 @@ class DSRLResumable(DSRL):
     #                        that makes early Q_W positive.
     reward_scale = 1.0
     critic_entropy_scale = 1.0
+    gate = None  # GateController when gate.enabled
 
     def _excluded_save_params(self):
-        return super()._excluded_save_params() + ["diffusion_policy", "offline_buf"]
+        return super()._excluded_save_params() + ["diffusion_policy", "offline_buf", "gate"]
+
+    def gate_state(self):
+        return self.gate.state_dict() if self.gate is not None else None
+
+    def load_gate_state(self, state):
+        if self.gate is not None and state:
+            self.gate.load_state_dict(state)
 
     def _get_torch_save_params(self):
         state_dicts, pytorch_variables = super()._get_torch_save_params()
@@ -146,7 +154,10 @@ class DSRLResumable(DSRL):
             u_pi = getattr(self.actor.action_dist, "gaussian_actions", None)
 
             ent_coef_loss = None
-            if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
+            hold_alpha = self.gate is not None and not self.gate.open and self.gate.actuator == "alpha_hold"
+            if hold_alpha:
+                ent_coef = th.tensor(self.gate.alpha_hi, device=self.device)
+            elif self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
                 ent_coef = th.exp(self.log_ent_coef.detach())
                 ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
                 ent_coef_losses.append(ent_coef_loss.item())
@@ -174,8 +185,11 @@ class DSRLResumable(DSRL):
                 elif self.critic_backup_combine_type == "mean":
                     next_q_values = th.mean(next_q_values, dim=1, keepdim=True)
                 bonus = ent_coef * next_log_prob.reshape(-1, 1)
-                if self.critic_entropy_scale != 1.0:
-                    bonus = self.critic_entropy_scale * bonus
+                beta = self.critic_entropy_scale
+                if self.gate is not None and not self.gate.open and self.gate.actuator == "hard_backup":
+                    beta = 0.0
+                if beta != 1.0:
+                    bonus = beta * bonus
                 next_q_values = next_q_values - bonus
                 rewards = replay_data.rewards
                 if self.reward_scale != 1.0:
@@ -260,6 +274,16 @@ class DSRLResumable(DSRL):
         for key, value in diag.items():
             self.logger.record("train/" + key, value)
 
+        if self.gate is not None:
+            was_open = self.gate.open
+            self.gate.update(diag.get("ratio_ge_gq"))
+            if self.gate.open and not was_open and self.gate.actuator == "alpha_hold" and self.log_ent_coef is not None:
+                # auto-alpha continues from the held value instead of jumping
+                # back to wherever the untouched optimizer left it
+                self.log_ent_coef.data.fill_(float(np.log(self.gate.alpha_hi)))
+            self.logger.record("train/gate_open", float(self.gate.open))
+            self.logger.record("train/gate_open_call", float(self.gate.open_call))
+
 
 # --------------------------------------------------------------- config check
 
@@ -302,6 +326,11 @@ def config_fingerprint(cfg):
     if pretrain is not None:
         fingerprint["load_actor"] = bool(pretrain.get("load_actor", True))
         fingerprint["load_ent_coef"] = bool(pretrain.get("load_ent_coef", False))
+    gate = cfg.get("gate", None)
+    if gate is not None and bool(gate.get("enabled", False)):
+        fingerprint["gate"] = "%s:%s:%s:%s:%s:%s" % (
+            gate.get("signal"), gate.get("actuator"), gate.get("tau"), gate.get("K"),
+            gate.get("clock_calls"), gate.get("alpha_hi"))
     mix = cfg.get("offline_mix", None)
     if mix is not None:
         mode = str(mix.get("mode", "none") or "none")
@@ -423,6 +452,9 @@ def build_agent(cfg, env, base_policy, buffer_size, replay_buffer_kwargs=None,
             model.ent_coef_lr = ent_coef_lr
         model.reward_scale = float(cfg.train.get("reward_scale", 1.0))
         model.critic_entropy_scale = float(cfg.train.get("critic_entropy_scale", 1.0))
+        gate = cfg.get("gate", None)
+        if gate is not None and bool(gate.get("enabled", False)):
+            model.gate = GateController.from_cfg(gate)
         return model
     raise ValueError("unknown algorithm %r" % cfg.algorithm)
 
@@ -498,6 +530,85 @@ def load_pretrained_weights(model, path, cfg, variant, load_ent_coef=False, load
         model.log_ent_coef.data.copy_(payload["log_ent_coef"].to(model.device))
         loaded.append("log_ent_coef")
     return meta, loaded
+
+
+# --------------------------------------------------------------------- gate
+
+GATE_SIGNALS = ("ratio", "clock")
+GATE_ACTUATORS = ("hard_backup", "alpha_hold")
+
+
+class GateController:
+    """Holds one lever closed until the critic looks trustworthy, then opens.
+
+    Pure state machine, no torch, so it can be tested and saved as plain
+    values. One update per DSRLResumable.train() call.
+
+      signal    ratio  open when ratio_ge_gq (entropy gradient / Q gradient on
+                       the actor) has been below tau for K consecutive updates
+                clock  open after clock_calls updates, the control that asks
+                       whether the signal matters or only the delay does
+      actuator  hard_backup  critic target without the entropy bonus while
+                             closed (beta = 0), the configured beta once open
+                alpha_hold   alpha fixed at alpha_hi while closed; auto-alpha
+                             resumes from alpha_hi once open
+
+    Once open the gate never closes again.
+    """
+
+    def __init__(self, signal="ratio", actuator="hard_backup", tau=1.0, K=50, clock_calls=0, alpha_hi=0.3):
+        if signal not in GATE_SIGNALS:
+            raise ValueError("gate.signal must be one of %s, got %r" % (", ".join(GATE_SIGNALS), signal))
+        if actuator not in GATE_ACTUATORS:
+            raise ValueError("gate.actuator must be one of %s, got %r" % (", ".join(GATE_ACTUATORS), actuator))
+        self.signal = signal
+        self.actuator = actuator
+        self.tau = float(tau)
+        self.K = int(K)
+        self.clock_calls = int(clock_calls)
+        self.alpha_hi = float(alpha_hi)
+        self.calls = 0
+        self.streak = 0
+        self.open = False
+        self.open_call = -1
+
+    @classmethod
+    def from_cfg(cls, gate):
+        return cls(
+            signal=str(gate.get("signal", "ratio")), actuator=str(gate.get("actuator", "hard_backup")),
+            tau=gate.get("tau", 1.0), K=gate.get("K", 50), clock_calls=gate.get("clock_calls", 0),
+            alpha_hi=gate.get("alpha_hi", 0.3),
+        )
+
+    def update(self, ratio):
+        """One training update happened; ratio may be None/NaN when unavailable."""
+        self.calls += 1
+        if self.open:
+            return True
+        if self.signal == "clock":
+            if self.calls >= self.clock_calls:
+                self._open()
+            return self.open
+        if ratio is not None and ratio == ratio and ratio < self.tau:
+            self.streak += 1
+        else:
+            self.streak = 0
+        if self.streak >= self.K:
+            self._open()
+        return self.open
+
+    def _open(self):
+        self.open = True
+        self.open_call = self.calls
+
+    def state_dict(self):
+        return {"calls": self.calls, "streak": self.streak, "open": bool(self.open), "open_call": self.open_call}
+
+    def load_state_dict(self, state):
+        self.calls = int(state.get("calls", 0))
+        self.streak = int(state.get("streak", 0))
+        self.open = bool(state.get("open", False))
+        self.open_call = int(state.get("open_call", -1))
 
 
 # --------------------------------------------------------------- offline mix
@@ -783,6 +894,9 @@ class ResumeCheckpointCallback(BaseCallback):
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         entry.update(self.logging_callback.state_dict())
+        gate_state = getattr(self.model, "gate_state", None)
+        if callable(gate_state) and gate_state() is not None:
+            entry["gate"] = gate_state()
 
         slots = dict(raw.get("slots") or {})
         slots[slot] = entry

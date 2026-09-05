@@ -37,6 +37,7 @@ DEFAULT_AXES = {
     "alpha": ["baseline", "alr_half", "alr_double", "fixalpha"],
     "sweep": ["baseline", "fixalpha", "fixalpha_003", "fixalpha_01", "fixalpha_03", "fixalpha_1"],
     "scale": ["baseline", "rs_025", "rs_05", "rs_2", "hardq"],
+    "gate": ["baseline", "hardq", "gate_sig", "gate_clk"],
 }
 DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean", "offline_p", "qw_mean",
              "ratio_ge_gq", "gq_norm"]

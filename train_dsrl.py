@@ -242,6 +242,8 @@ def main(cfg: OmegaConf):
         model._episode_num = int(state.get("episode_num", 0))
         model._n_updates = int(state.get("n_updates", 0))
         logging_callback.load_state(state)
+        if hasattr(model, "load_gate_state"):
+            model.load_gate_state(state.get("gate"))
         print(
             "[resume] %s at %d env steps (%d sb3 steps), buffer %d transitions"
             % (

@@ -78,6 +78,10 @@ class FakeModel:
         self.num_timesteps = 0
         self._episode_num = 0
         self._n_updates = 0
+        self.gate = None
+
+    def gate_state(self):
+        return self.gate.state_dict() if self.gate is not None else None
 
     def save(self, path):
         with zipfile.ZipFile(path, "w") as z:
@@ -269,6 +273,19 @@ def test_run_fingerprint_includes_variant():
     cfg = make_cfg()
     cfg["variant"] = "iql"
     assert o2o_utils.config_fingerprint(cfg)["variant"] == "iql"
+
+
+def test_gate_state_is_written_to_the_run_state():
+    d = tempfile.mkdtemp()
+    cb, log = make_callback(d)
+    cb.model.gate = o2o_utils.GateController(signal="ratio", tau=1.0, K=2)
+    cb.model.gate.update(0.5)
+    cb.save()
+    state = o2o_utils.read_run_states(d)[0]
+    assert state["gate"] == {"calls": 1, "streak": 1, "open": False, "open_call": -1}
+    cb.model.gate = None
+    cb.save()
+    assert "gate" not in o2o_utils.read_run_states(d)[0]
 
 
 def test_unreadable_state_file_is_not_a_crash():

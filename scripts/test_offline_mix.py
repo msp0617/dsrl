@@ -216,6 +216,47 @@ def test_decoupled_alpha_optimizer_stays_out_of_the_lr_reset():
     assert o2o_utils.DSRLResumable.ent_coef_lr is None
 
 
+def test_gate_ratio_opens_after_k_consecutive_updates_below_tau():
+    g = o2o_utils.GateController(signal="ratio", tau=1.0, K=3)
+    for r in (5.0, 0.5, 0.5):
+        assert g.update(r) is False
+    assert g.update(0.5) is True and g.open_call == 4
+    assert g.update(9.0) is True, "the gate never closes again"
+
+
+def test_gate_streak_resets_on_a_violation_and_ignores_missing_ratio():
+    g = o2o_utils.GateController(signal="ratio", tau=1.0, K=3)
+    g.update(0.5); g.update(0.5); g.update(2.0)
+    assert g.streak == 0 and not g.open
+    g.update(0.5); g.update(None); g.update(0.5); g.update(0.5)
+    assert not g.open  # None broke the streak
+    g.update(0.5)
+    assert g.open and g.open_call == 8
+
+
+def test_gate_clock_opens_on_schedule_regardless_of_ratio():
+    g = o2o_utils.GateController(signal="clock", clock_calls=3)
+    assert g.update(0.0) is False and g.update(0.0) is False
+    assert g.update(0.0) is True and g.open_call == 3
+
+
+def test_gate_state_roundtrip_and_fingerprint():
+    g = o2o_utils.GateController(signal="ratio", tau=0.8, K=2)
+    g.update(0.1)
+    h = o2o_utils.GateController(signal="ratio", tau=0.8, K=2)
+    h.load_state_dict(g.state_dict())
+    assert h.update(0.1) is True and h.open_call == 2
+    cfg = make_cfg()
+    cfg["gate"] = Cfg(enabled=True, signal="ratio", actuator="hard_backup", tau=1.0, K=50, clock_calls=0, alpha_hi=0.3)
+    assert o2o_utils.config_fingerprint(cfg)["gate"] == "ratio:hard_backup:1.0:50:0:0.3"
+    assert "gate" not in o2o_utils.config_fingerprint(make_cfg())
+    try:
+        o2o_utils.GateController(signal="oracle")
+    except ValueError:
+        return
+    raise AssertionError("unknown signal accepted")
+
+
 def test_critic_target_levers_default_to_upstream_and_enter_the_fingerprint():
     assert o2o_utils.DSRLResumable.reward_scale == 1.0
     assert o2o_utils.DSRLResumable.critic_entropy_scale == 1.0
