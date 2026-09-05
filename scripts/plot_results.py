@@ -32,7 +32,7 @@ RUN_RE = re.compile(r"^(?P<task>can|square|lift|transport)_(?P<group>.+)_s(?P<se
 # each axis is drawn on its own so tasks never share a y axis.
 DEFAULT_AXES = {
     "critic": ["baseline", "warmup", "iql", "warmupc", "fixalpha"],
-    "mix": ["baseline", "mix_prefill", "mix_fixed", "mix_linear", "iql_linear"],
+    "mix": ["baseline", "mix_prefill", "mix_fixed", "mix_linear", "iql_linear", "iql_prefill"],
     "square": ["square_baseline"],
 }
 DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean", "offline_p", "qw_mean"]
