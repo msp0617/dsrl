@@ -490,6 +490,31 @@ for S in 4 5; do launch can_iql_s$S seed=$S variant=iql pretrain_path=$PROJ/logs
 
 **주의**: 평가 노이즈가 커서 개별 seed 곡선은 ±0.1 흔들린다. 포스터는 3~5 seed 평균±SE로. 진단 그림의 fixalpha 선은 warmupc와 겹쳐 안 보였던 것(값은 있음) → 선 스타일 구분(커밋 참조).
 
+### 9/5 오후 추가 결과 (CSV를 로컬로 받아 `plot_results.py`, `alpha_timing.py`로 분석)
+CSV 묶음: Colab에서 `zip -r csv_bundle.zip logs -i "logs/*/eval_log.csv" "logs/*/train_log.csv" "logs/*.csv"` → 다운로드 → 로컬에서 스크립트 실행. Colab 그림 셀 불필요.
+
+| 조건 | n | 최저 | 회복 | AUC 0~100k | 129k | 최종 |
+|---|---|---|---|---|---|---|
+| mix_linear 0.8→0.1 | 3 | **0.02** @35k | 51k | 0.62 | 0.75 | 0.81 |
+| iql_prefill (두 축 교차) | 3 | 0.16 | 52k | 0.56 | 0.85 | 0.84 |
+| alr_double (α lr 6e-4) | 3 | 0.14 @31.6k | 42k | 0.48 | — | 0.53 @100k |
+| alr_half (α lr 1.5e-4) | 3 | 0.14 | 52k | 0.43 | — | 0.41 @100k |
+| square_baseline | 3 | 0.19 @42k | 75k | 0.39 | — | 0.48 @127k |
+| square_iql | 3 | 0.29 (평균곡선 0.37) | 72k | 0.44 | — | 0.49 @127k |
+
+- **linear**: 명시적 0.8→0.1 스케줄은 prefill의 자연 감쇠(0.91→0.43)보다 **못하다**(AUC 0.62 vs 0.67, 최종 0.81 vs 0.89, 35k 급락 0.02로 가장 깊음). "논문 기본 세팅이 이미 좋은 스케줄"로 정리.
+- **iql_prefill**: 두 축은 **쌓이지 않는다**. prefill 단독(0.67)보다 AUC가 낮고(0.56) 최종은 같다(0.84 vs 0.89). 축 B가 축 A를 흡수. 포스터 마지막 문장은 "데모가 리플레이에 있으면 critic 사전학습은 추가 이득이 없다".
+- **Square 축 A 재현**: baseline 42k에서 0.21, iql은 dip이 거의 없음(평균곡선 최저 0.37). Can과 같은 방향·크기. 127k 최종은 둘 다 0.5 근처(미수렴, 150k 예산).
+- **감쇠율 개입(`alpha_timing.py`)**: α<0.1 통과 double 27.6k / baseline 32k / half 40~42k. 기준선(0.405) 아래로 처음 내려간 시점 평균 **29.0k / 34.0k / 34.1k**, 바닥 평균 31.6k / 41k / 45k. double은 3 seed 모두 5k 앞당겨짐(확실). half는 첫 하락이 baseline과 같고 바닥만 늦음(약함). seed별 상관 0.47.
+  해석: **α는 dip 시점을 당길 수는 있지만 밀지는 못한다.** 감쇠를 늦춰도 Q_W가 엔트로피 보너스로 부풀어(half는 +175까지) actor를 끌어당기므로 α=0.15 근처에서 이미 넘어간다. 스위치는 "α·|log π| 대 Q_W 크기"의 비이고 α는 그 한 축. half는 dip이 길고 100k 성능도 낮다(0.41) → α를 오래 붙드는 건 손해. 3단계 게이트 설계에 직접 영향: α_hi를 오래 유지하면 안 되고, 열리는 시점은 Q 스케일 신호로 잡아야 함.
+- `diagnostics_alpha.png`: qw_mean 초기 부풀림이 half 175 > baseline 110 > double 55로 α 유지 시간에 비례. actor 통계(mu, 포화, log_std)는 세 조건이 같음.
+
+### 9/5 오후 돌고 있는 것
+- VM 1 (15:05 시작, 밤 9시 예상): `square_mix_prefill_s{1,2,3}`, `can_fixalpha_01_s{1,2,3}`(α=0.1 고정), `can_fixalpha_03_s{1,2,3}`(α=0.3 고정). 150k.
+- VM 2 (10:30 시작, 오후 5~6시 예상): `can_iql_prefill_s{1,2,3}`(200k, 위 표는 129k까지 반영), `can_alr_{half,double}_s{1,2,3}`(150k, 위 표는 100k까지).
+- VM 2가 비면 α 스윕 나머지: `can_fixalpha_003_s{1,2,3}`(0.03), `can_fixalpha_1_s{1,2,3}`(1.0). 셀은 섹션 14의 `launch` 형식으로 `train.ent_coef=0.03` / `=1.0`.
+- 영상: `scripts/render_episode.py`로 `$PROJ/videos/`에 π_dp 2편, baseline s1(300k) 2편 생성됨. `+policy=<exp_id>`로 다른 run도 가능.
+
 ## 16. Square 일반성 확인 (9/5, HANDOFF_SQUARE.md 검증 결과)
 
 **예측**: α 감쇠는 과제와 무관(그래디언트 스텝 함수)하므로 Square baseline도 학습 시작 후 약 1만 step, 즉 **env 42k 근처**(rollout 32,016 포함)에서 바닥. 포스터는 Can만으로 완성하고 Square는 나오면 패널 추가.
