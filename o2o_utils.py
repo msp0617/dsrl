@@ -302,6 +302,14 @@ def network_fingerprint(cfg):
     }
 
 
+def _number_or_string(value):
+    """SB3 accepts ent_coef as a number, 'auto', or 'auto_<initial>'; keep all three comparable."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def config_fingerprint(cfg):
     """The settings a run checkpoint cannot be reinterpreted under.
 
@@ -316,7 +324,7 @@ def config_fingerprint(cfg):
         "variant": str(cfg.get("variant", "baseline") or "baseline"),
         # auto (-1) vs a fixed alpha is a different experiment; the budget
         # (total_env_steps) is deliberately left out so a run can be extended.
-        "ent_coef": float(cfg.train.get("ent_coef", -1)),
+        "ent_coef": _number_or_string(cfg.train.get("ent_coef", -1)),
         "target_ent": float(cfg.train.get("target_ent", -1)),
         "ent_coef_lr": float(cfg.train.get("ent_coef_lr", -1) or -1),
         "reward_scale": float(cfg.train.get("reward_scale", 1.0)),

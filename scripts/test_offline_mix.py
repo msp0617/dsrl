@@ -211,6 +211,20 @@ def test_fingerprint_carries_the_alpha_learning_rate():
     raise AssertionError("a half-rate checkpoint resumed under the shared rate")
 
 
+def test_fingerprint_keeps_an_initial_auto_alpha_distinct_from_plain_auto():
+    # SB3 takes ent_coef 'auto_0.3' for auto-alpha starting at 0.3; the
+    # fingerprint used to float() it and crash, and must not equate it with -1.
+    cfg = make_cfg()
+    cfg.train.ent_coef = "auto_0.3"
+    assert o2o_utils.config_fingerprint(cfg)["ent_coef"] == "auto_0.3"
+    assert o2o_utils.config_fingerprint(make_cfg())["ent_coef"] == -1.0
+    try:
+        o2o_utils.check_fingerprint({"config": o2o_utils.config_fingerprint(make_cfg())}, cfg)
+    except RuntimeError:
+        return
+    raise AssertionError("an auto_0.3 run resumed from a plain auto checkpoint")
+
+
 def test_decoupled_alpha_optimizer_stays_out_of_the_lr_reset():
     # The class default means "shared", which is what upstream does.
     assert o2o_utils.DSRLResumable.ent_coef_lr is None
