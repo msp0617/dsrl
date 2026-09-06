@@ -215,7 +215,7 @@ def test_fingerprint_keeps_an_initial_auto_alpha_distinct_from_plain_auto():
     # SB3 takes ent_coef 'auto_0.3' for auto-alpha starting at 0.3; the
     # fingerprint used to float() it and crash, and must not equate it with -1.
     cfg = make_cfg()
-    cfg.train.ent_coef = "auto_0.3"
+    cfg.train["ent_coef"] = "auto_0.3"
     assert o2o_utils.config_fingerprint(cfg)["ent_coef"] == "auto_0.3"
     assert o2o_utils.config_fingerprint(make_cfg())["ent_coef"] == -1.0
     try:
