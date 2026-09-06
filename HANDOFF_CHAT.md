@@ -96,7 +96,7 @@
 | `gate.*` | 게이트(구현돼 있으나 폐기, 기본 off) |
 분석: `scripts/plot_results.py`(축별 성공률·진단 그림, `metrics.csv`), `scripts/alpha_timing.py`(α·ratio 통과 시점 vs 첫 하락). 테스트 36개 통과.
 
-## 6. 지금 상태 (9/6 17:10)
+## 6. 지금 상태 (9/6 18:40)
 - **90 run 전부 완료**(18:10, 세션 종료). CSV 묶음: 로컬 `Downloads\csv_bundle (5).zip`(전부). 그림·`metrics.csv`: `Downloads\dsrl_figs_0906\`(success_critic/mix/sweep/adaptive/square/scale/alpha, diagnostics_*). Colab 크레딧 9.3.
 - 결과는 Drive `dsrl_project/logs/<exp_id>/{eval_log.csv,train_log.csv}`, `<exp_id>.out`.
 
