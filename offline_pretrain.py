@@ -287,31 +287,39 @@ def run_cql(model, cfg, pre, log, buf, calibrate):
         batch, returns = buf.sample(batch_size, with_returns=True)
         obs, actions, next_obs = batch.observations, batch.actions, batch.next_observations
         rewards, dones = batch.rewards, batch.dones
+        logging = step % int(pre.log_every) == 0 or step == int(pre.steps)
+        # With cql_alpha=0 (plain TD, the "td" rung) the penalty is zero whatever
+        # the sampled actions are worth, so pi_dp is only run on them at log
+        # steps, for the q_ood_mean diagnostic: 1 instead of 5 pi_dp calls per step.
+        need_ood = alpha > 0 or logging
         with th.no_grad():
             next_actions = diffusion_actions(model, next_obs, prior_noise(batch_size, model, clip))
             next_q = combine_q(critic_target(next_obs, next_actions), combine)
             target = rewards + gamma * (1.0 - dones) * next_q
-            # actions the online actor could play but the data does not contain
-            obs_rep = obs.repeat_interleave(n_samples, dim=0)
-            ood_actions = diffusion_actions(model, obs_rep, prior_noise(batch_size * n_samples, model, clip))
+            if need_ood:
+                # actions the online actor could play but the data does not contain
+                obs_rep = obs.repeat_interleave(n_samples, dim=0)
+                ood_actions = diffusion_actions(model, obs_rep, prior_noise(batch_size * n_samples, model, clip))
 
         q_values = critic(obs, actions)
-        q_ood_heads = critic(obs_rep, ood_actions)
         td_loss = 0.5 * sum(F.mse_loss(q, target) for q in q_values)
         penalty, floored = 0.0, 0.0
-        for q_d, q_o in zip(q_values, q_ood_heads):
-            p, f = conservative_penalty(
-                q_d, q_o.reshape(batch_size, n_samples), alpha, returns if calibrate else None
-            )
-            penalty = penalty + p
-            floored = floored + f / len(q_values)
+        q_ood_heads = None
+        if need_ood:
+            q_ood_heads = critic(obs_rep, ood_actions)
+            for q_d, q_o in zip(q_values, q_ood_heads):
+                p, f = conservative_penalty(
+                    q_d, q_o.reshape(batch_size, n_samples), alpha, returns if calibrate else None
+                )
+                penalty = penalty + p
+                floored = floored + f / len(q_values)
         loss = td_loss + penalty
         critic.optimizer.zero_grad()
         loss.backward()
         critic.optimizer.step()
         polyak_update(critic.parameters(), critic_target.parameters(), model.tau)
 
-        if step % int(pre.log_every) == 0 or step == int(pre.steps):
+        if logging:
             log(phase, step, {
                 "critic_loss": td_loss.item(),
                 "penalty": float(penalty),
