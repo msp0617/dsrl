@@ -13,12 +13,13 @@ where its initial critic weights come from:
           outside the data. Q_A is then distilled into Q_W exactly as the
           online loop does it (Algorithm 1, line 5).
 
-  cql     conservative Q-learning. The Q_A target is
-          r + gamma * Q_A_target(s', pi_dp(s', w')), w' ~ N(0, I): the value of
-          the diffusion policy under its prior noise, so again no actor. On top
-          of the TD loss, cql_alpha * (E_w Q_A(s, pi_dp(s, w)) - Q_A(s, a_data))
-          pushes down the actions pi_dp can produce but the data does not hold,
-          and pushes up the ones it does. Distilled into Q_W like iql.
+  cql     iql's critic plus CQL's regulariser: the same expectile V(s) and
+          the same target r + gamma * V(s'), and on top of the TD loss
+          cql_alpha * (E_w Q_A(s, pi_dp(s, w)) - Q_A(s, a_data)) pushes down
+          the actions pi_dp can produce but the data does not hold, and pushes
+          up the ones it does. The target never sees the sampled actions, so
+          the penalty cannot feed back through the bootstrap. cql_alpha=0 is
+          iql. Distilled into Q_W like iql.
 
   calql   the same with Cal-QL's floor: in the penalty, Q_A of a sampled action
           is replaced by max(Q_A, G), G the demonstration's return-to-go from s
@@ -266,14 +267,22 @@ def require_returns(buf, gamma, path):
 
 
 def run_cql(model, cfg, pre, log, buf, calibrate):
-    """Q_A on the data with CQL's penalty; calibrate=True is Cal-QL.
+    """Q_A with IQL's in-sample target plus CQL's penalty; calibrate=True is Cal-QL.
 
-    The target r + gamma Q_A_target(s', pi_dp(s', w')), w' ~ N(0, I), values the
-    diffusion policy under its prior noise, so no actor is involved and the two
-    methods differ from each other in the floor only, and from iql in the
-    target and the penalty.
+    V(s) is fitted by expectile regression to Q_target(s, a_data) and the
+    Q_A target is r + gamma V(s'), exactly as run_iql does; on top, the
+    penalty acts on Q_A of actions pi_dp produces from prior noise. The
+    target never sees those sampled actions, so the penalty cannot feed
+    back through the bootstrap. (A first version bootstrapped from
+    Q_target(s', pi_dp(s', w')), the very distribution the penalty pushes
+    down; with no actor to push back, Q_A spiralled to -9,500 on Can within
+    40k steps while the returns are about -100. Real CQL relies on the actor
+    maximising Q to hold that side up.) With cql_alpha=0 this is run_iql.
+    Returns the value network.
     """
+    device = model.device
     gamma = float(cfg.train.discount)
+    expectile = float(pre.expectile)
     alpha = float(pre.cql_alpha)
     n_samples = int(pre.cql_n_samples)
     clip = float(pre.cql_noise_clip)
@@ -281,21 +290,31 @@ def run_cql(model, cfg, pre, log, buf, calibrate):
     combine = str(cfg.train.critic_backup_combine_type)
     critic, critic_target = model.critic, model.critic_target
     critic.set_training_mode(True)
+    value_net = make_value_net(cfg, device)
+    value_optimizer = th.optim.Adam(value_net.parameters(), lr=float(cfg.train.actor_lr))
     phase = "calql" if calibrate else "cql"
 
     for step in range(1, int(pre.steps) + 1):
         batch, returns = buf.sample(batch_size, with_returns=True)
         obs, actions, next_obs = batch.observations, batch.actions, batch.next_observations
         rewards, dones = batch.rewards, batch.dones
+
+        # V(s) <- expectile regression on Q_target(s, a), a from the data
+        with th.no_grad():
+            q_data_target = combine_q(critic_target(obs, actions), combine)
+        value = value_net(obs)
+        value_loss = expectile_loss(q_data_target - value, expectile).mean()
+        value_optimizer.zero_grad()
+        value_loss.backward()
+        value_optimizer.step()
+
         logging = step % int(pre.log_every) == 0 or step == int(pre.steps)
-        # With cql_alpha=0 (plain TD, the "td" rung) the penalty is zero whatever
-        # the sampled actions are worth, so pi_dp is only run on them at log
-        # steps, for the q_ood_mean diagnostic: 1 instead of 5 pi_dp calls per step.
+        # With cql_alpha=0 the penalty is zero whatever the sampled actions
+        # are worth, so pi_dp is only run on them at log steps (diagnostic).
         need_ood = alpha > 0 or logging
         with th.no_grad():
-            next_actions = diffusion_actions(model, next_obs, prior_noise(batch_size, model, clip))
-            next_q = combine_q(critic_target(next_obs, next_actions), combine)
-            target = rewards + gamma * (1.0 - dones) * next_q
+            # Q_A(s, a) <- r + gamma V(s'). No action is sampled for s'.
+            target = rewards + gamma * (1.0 - dones) * value_net(next_obs)
             if need_ood:
                 # actions the online actor could play but the data does not contain
                 obs_rep = obs.repeat_interleave(n_samples, dim=0)
@@ -321,13 +340,16 @@ def run_cql(model, cfg, pre, log, buf, calibrate):
 
         if logging:
             log(phase, step, {
+                "value_loss": value_loss.item(),
                 "critic_loss": td_loss.item(),
                 "penalty": float(penalty),
                 "q_mean": th.cat(q_values, dim=1).mean().item(),
+                "v_mean": value.mean().item(),
                 "q_ood_mean": th.cat(q_ood_heads, dim=1).mean().item(),
                 "floored_frac": float(floored),
                 "return_mean": returns.mean().item() if returns is not None else float("nan"),
             })
+    return value_net
 
 
 # --------------------------------------------------------------------- main
@@ -403,7 +425,7 @@ def main(cfg: OmegaConf):
         "steps": int(pre.steps),
         "distill_steps": int(pre.distill_steps) if method != "warmup" else 0,
         "actor_steps": int(pre.actor_steps) if method != "warmup" else int(pre.steps),
-        "expectile": float(pre.expectile) if method == "iql" else None,
+        "expectile": float(pre.expectile) if method != "warmup" else None,
         "cql_alpha": float(pre.cql_alpha) if method in ("cql", "calql") else None,
         "cql_n_samples": int(pre.cql_n_samples) if method in ("cql", "calql") else None,
         "cql_noise_clip": float(pre.cql_noise_clip) if method in ("cql", "calql") else None,
@@ -430,8 +452,9 @@ def main(cfg: OmegaConf):
             run_actor(model, cfg, pre, log)
             payload["actor"] = model.actor.state_dict()
     else:
-        run_cql(model, cfg, pre, log, buf, calibrate=(method == "calql"))
+        value_net = run_cql(model, cfg, pre, log, buf, calibrate=(method == "calql"))
         run_distill(model, pre, log)
+        payload["value"] = value_net.state_dict()
 
     payload["critic"] = model.critic.state_dict()
     payload["critic_target"] = model.critic_target.state_dict()
