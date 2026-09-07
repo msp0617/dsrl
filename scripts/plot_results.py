@@ -23,10 +23,13 @@ Outputs in --out:
   qgap_<axis>.png           q_start - mc_return from eval_log.csv, where present
   metrics.csv               per run and per group (mean, SE): step0, min over the
                             early window, dip depth, recovery step, early AUC,
-                            value at env 129k, final; regret against pi_dp when
-                            base_policy_eval.csv exists. min_mean_curve is the
-                            minimum of the seed-mean curve read on the common
-                            5k grid (online 5,008 x k)
+                            value at env 129k, final, t50/t80 (online steps to
+                            first reach 0.5 / 0.8, --levels); regret against
+                            pi_dp when base_policy_eval.csv exists.
+                            min_mean_curve is the minimum of the seed-mean
+                            curve read on the common 5k grid (online 5,008 x k)
+  summary.csv               one row per group in the time-to-level / AUC / final
+                            form, mean +- SE over seeds
 
 Early AUC: per seed, trapezoid over online 0..until of the evaluation curve
 with the initial evaluation at 0 (a run whose last evaluation falls short of
@@ -152,8 +155,15 @@ def early_auc(x, y, until):
     return float(trapezoid(ys, xs) / (xs[-1] - xs[0]))
 
 
-def run_metrics(ev, until, reference=None, final_points=3):
-    """Dip statistics of one run's evaluation curve, on online steps."""
+def run_metrics(ev, until, reference=None, final_points=3, levels=(0.5, 0.8)):
+    """Dip statistics of one run's evaluation curve, on online steps.
+
+    t50, t80 (one per entry of `levels`): the first evaluation, online steps,
+    at which success reaches the level, the initial evaluation included and
+    NaN when the run never gets there. A Can run whose random-actor step-0
+    policy already scores above 0.5 has t50 = 0, so on Can t80 is the one
+    that carries information.
+    """
     x, y = ev.online_steps.to_numpy(float), ev.success_rate.to_numpy(float)
     task = run_task(ev.attrs["path"]) if "path" in ev.attrs else "can"
     step0 = y[0] if len(y) and x[0] == 0 else np.nan
@@ -174,6 +184,9 @@ def run_metrics(ev, until, reference=None, final_points=3):
             out["recovery_pi_dp_at"] = int(x[np.argmax(after_ref)]) if after_ref.any() else np.nan
         out["auc_early"] = early_auc(x, y, until)
     out["final"] = float(np.mean(y[-final_points:])) if len(y) else np.nan
+    for level in levels:
+        hit = np.nonzero(y >= level)[0]
+        out["t%d" % int(round(level * 100))] = int(x[hit[0]]) if len(hit) else np.nan
     # The last evaluation every budget reaches (150k runs stop before the
     # 154k evaluation), so groups with different budgets stay comparable.
     at = 129152 - rollout_env(task)
@@ -298,7 +311,10 @@ def main():
     ap.add_argument("--until_env", type=int, default=100000,
                     help="end of the early window in env steps; online cut-off = until_env - rollout")
     ap.add_argument("--smooth", type=int, default=0, help="moving-average window in evaluation points")
+    ap.add_argument("--levels", default="0.5,0.8", help="success levels for the time-to-level columns (t50, t80)")
     args = ap.parse_args()
+    levels = tuple(float(v) for v in args.levels.split(",") if v)
+    level_keys = ["t%d" % int(round(v * 100)) for v in levels]
 
     import matplotlib
     matplotlib.use("Agg")
@@ -325,13 +341,13 @@ def main():
         for s, p in sorted(seeds.items()):
             ev = load_eval(p)
             ev.attrs["path"] = p
-            m = run_metrics(ev, until[task], reference)
+            m = run_metrics(ev, until[task], reference, levels=levels)
             m.update({"group": g, "seed": s, "run": os.path.basename(p), "until_online": until[task]})
             rows.append(m)
             per_seed.append(m)
         agg = {"group": g, "seed": "mean", "run": "n=%d" % len(per_seed), "until_online": until[task]}
         for key in ("step0", "min_in_window", "min_at", "dip_depth", "recovery_at", "recovery_pi_dp_at",
-                    "auc_early", "at_env129k", "final", "mc_return_first", "q_start_first"):
+                    "auc_early", "at_env129k", "final", "mc_return_first", "q_start_first") + tuple(level_keys):
             vals = [m[key] for m in per_seed if key in m and np.isfinite(m[key])]
             agg[key] = float(np.mean(vals)) if vals else np.nan
             agg[key + "_se"] = float(np.std(vals, ddof=1) / np.sqrt(len(vals))) if len(vals) > 1 else np.nan
@@ -352,9 +368,19 @@ def main():
         rows.append(agg)
     metrics = pd.DataFrame(rows)
     metrics.to_csv(os.path.join(args.out, "metrics.csv"), index=False)
-    show = ["group", "run", "step0", "min_mean_curve", "min_mean_curve_at", "recovery_pi_dp_at", "auc_early",
-            "auc_early_se", "at_env129k", "final"]
-    print(metrics[metrics.seed == "mean"][[c for c in show if c in metrics]].to_string(index=False))
+    # The summary in the form time-to-level / AUC / final, mean +- SE over seeds.
+    # A time-to-level averages the seeds that reached the level; "k/n" says how many did.
+    means = metrics[metrics.seed == "mean"]
+    summary = pd.DataFrame({
+        "group": means.group, "n": means.run.str.replace("n=", ""),
+        **{k: ["%.0f (%d/%s)" % (t, c, n) if np.isfinite(t) else "never (0/%s)" % n
+               for t, c, n in zip(means[k], means[k + "_n"], means.run.str.replace("n=", ""))] for k in level_keys},
+        "auc_early": ["%.3f+-%.3f" % ab for ab in zip(means.auc_early, means.auc_early_se.fillna(0))],
+        "final": ["%.3f+-%.3f" % ab for ab in zip(means.final, means.final_se.fillna(0))],
+        "at_env129k": ["%.3f" % v if np.isfinite(v) else "-" for v in means.at_env129k],
+    })
+    summary.to_csv(os.path.join(args.out, "summary.csv"), index=False)
+    print(summary.to_string(index=False))
     for task, reference in references.items():
         if reference is not None:
             print("pi_dp reference (%s): %.3f +- %.3f" % ((task,) + reference))
