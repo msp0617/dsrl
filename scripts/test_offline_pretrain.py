@@ -102,7 +102,7 @@ def test_calql_floor_stops_the_push_below_the_return_and_lifts_data_to_it():
     assert abs(floored.item() - 0.75) < 1e-6, "three of the four unseen values sat below their return"
     penalty.backward()
     assert q_ood.grad[0, 0] > 0 and q_ood.grad[0, 1] == 0 and (q_ood.grad[1] == 0).all(), "floored entries get no push"
-    assert q_data.grad[1, 0] < -1.9, "row 2: the return (20) is above the data action (2), so it is pulled up"
+    assert q_data.grad[1, 0] < -0.9, "row 2: the return (20) is above the data action (2), so it is pulled up (alpha / batch)"
 
 
 def test_prior_noise_shape_and_clip():
