@@ -1,7 +1,12 @@
 """Offline pass criteria for a pre-trained critic, before it goes online.
 
-    python scripts/check_pretrain.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \\
+    python scripts/check_pretrain.py --config-name=dsrl_can.yaml \\
         pretrain_path=$PROJ/logs/pretrain/calql_can_s1.pt offline_data_path=$PROJ/offline/can_train_offline.npz
+
+Do not pass --config-path=cfg/robomimic: Hydra resolves a relative path
+against this script's directory (scripts/), so it would look for
+scripts/cfg/robomimic. The decorator already points at <repo>/cfg/robomimic;
+pass an absolute path if you need another directory.
 
 Loads Q_A from the .pt, samples states from the chunk file and reports, per
 state and averaged: Q_A(s, a_data), E_w Q_A(s, pi_dp(s, w)) over K prior

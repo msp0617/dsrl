@@ -925,7 +925,16 @@ done
 - **반증 조건("Can에서는 critic보다 온도가 지배")**: 같은 auto-α에서 calql 단독이 엔트로피 붕괴가 그대로인데도 dip을 완전히 없앰; calibration gap이 엔트로피 지표보다 seed별 dip 깊이·시점을 더 잘 예측; calql 단독이 calql_t12i와 같은 성능; 잘 교정된 critic에서 엔트로피 개입 효과가 사라짐. 반대로 calql이 iql처럼 dip을 얕게만 하고 calql_t12i에서만 dip이 없어지면 "교정은 출발점을, 엔트로피 붕괴가 전이의 방아쇠를" 구조.
 - 벌점 분포 = 증류 분포(N(0,I))는 버그가 아니라 목적에 부합(온라인 Q_W가 읽는 영역을 보수적으로). 순위 정보는 TD/IQL과 일반화에서 오고 CQL은 낮추기·Cal-QL은 그 한계만. 균등 상자 표본은 오늘 넣지 않음.
 
-### 20.5 기타
+### 20.5 19:40 상태 — 사전학습 18개 완료, hq 인과 닫힘, 온라인 24 run 띄우는 중, 다른 기기에서 이어가기
+- **Colab 세션 3개가 19:2x에 모두 끊김**(계정 한도 아님, 원인 불명). 잃은 것 없음: `$PROJ/logs/pretrain/{td,cql,calql}_{can,square}_s{1,2,3}.pt` 18개 완성(Can 18:58, Square 19:09, 증류 25k까지), hq 7 run 전부 `[done]`(127k가 마지막 평가).
+- **hq 판정(127k)**: `square_tent12_hq` 0.45/0.51/0.52 = **0.49** vs baseline n=5 **0.40**(0.35/0.62/0.43/0.34/0.28) vs tent12 n=5 **0.37**(0.34/0.46/0.39/0.32/0.33). 42k는 0.33(판정선). 사전 기준(42k ≥ 0.33 그리고 127k ≥ 0.47) 충족 → **critic 타깃에서 엔트로피 보너스를 빼면 Square 후반 붕괴가 사라지고 baseline 위**. 인과 고리 닫힘(3 seed, 42k 경계 → "시사적"). 포스터 6번 패널.
+- 사전학습 최종 로그(시도 3): Can `q_data` −90~−100(G −100), cql `q_ood` −145~−150, calql −135~−140(바닥 0.88); td `q ≈ q_ood ≈ −120`. Square td −170(G −150), cql −140/−150, calql −103/−110. 드리프트 없음. **prior 정책 가치 < G**(Can −20, Square −15): Cal-QL 바닥의 전제(정책 ≥ 행동정책)가 여기선 안 묶임.
+- **온라인(새 VM 3대, 19:40~)**: VM1 = Can `can_{td,cql,calql}_s{1,2,3}` 150k(9 run, ≈01:50); VM2 = `can_calql_t12i_s{1,2,3}` + `can_calql_prefill_s{1,2,3}` 150k(≈00:00); VM3 = Square `square_{td,cql,calql}_s{1,2,3}` 100k(≈00:00). 셀은 `colab/vm2_can_td_cql.ipynb` 14번(`METHODS="td cql calql"`), `vm1_followup.ipynb` 3번, `vm3_square_cql.ipynb` 14번. keepalive가 끝나면 자동 반납.
+- `scripts/check_pretrain.py`는 `--config-path`를 **주지 말 것**(상대경로가 scripts/ 기준으로 풀려 실패). 포스터 진단 숫자용이라 온라인 시작을 막지 않음.
+- **포스터**: `poster/build_poster.py`(템플릿 PPTX를 채움, 와이어프레임 PNG 동반). 초안 v0는 채팅으로 전달(템플릿·초안 PPTX는 로고가 있어 저장소에 넣지 않음; 템플릿은 심포지엄 배포본, 초안은 스크립트로 재생성). 1막(critic 교정) 좌측·2막(엔트로피) 우측, `[tonight]` 자리 = 오늘 밤 결과.
+- **다른 기기에서 이어가기**: 코드·문서·노트북은 전부 `origin/o2o`에 있고 결과는 Drive. 새 기기에서 `git clone -b o2o https://github.com/msp0617/dsrl.git` → 로컬 분석 환경 `python -m venv .venv && .venv/bin/pip install numpy pandas matplotlib torch h5py gymnasium nbformat python-pptx pymupdf pypdf` → Drive의 `csv_bundle.zip`을 `~/Downloads/logs/`에 풀기 → `HANDOFF.md` 20절부터. Claude Code 세션은 https://claude.ai/code/session_01PLS5zTNjh2cG5DtVqSPEy4 (웹에서 열람·Remote Control로 이어가기 가능한 경우) 또는 새 세션에 "HANDOFF.md 20.5부터 이어서".
+
+### 20.6 기타
 - Colab: G4(48 vCPU/176GB)는 Pro+에서만 보임. 이 워크로드는 RAM(run당 17GB)·CPU 바운드라 A100(83GB, 12 vCPU)은 유닛당 처리량이 절반 이하 → G4 배치를 돌리는 달에는 Pro+, 아니면 GCE.
 - `STATUS_2026-09-07.md`: 팀 공유용 진행상황 보고서(초안, AUC는 갱신됨). 수치 검증 워크플로는 세션 한도로 미완 — 배포 전에 §2 표와 한 번 더 대조할 것.
 - 로컬(macOS) 분석 환경: `.venv`(numpy/pandas/matplotlib), CSV는 `~/Downloads/logs/`(csv_bundle.zip 전개본, 98 run).
