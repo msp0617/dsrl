@@ -917,6 +917,14 @@ done
 ```
 확인: `.out`에 `[pretrain] cql: loaded critic, critic_target, critic_noise from ...`(actor 없음), `[eval] env_steps=0`. 분석: `plot_results.py --axes "critic=baseline,iql,cql,calql,warmupc"`. 비교 기준(online AUC 0~76k): baseline 0.41, iql 0.49, warmupc 0.51. **권장 확장**: 같은 .pt로 `train.ent_coef=auto_0.3 train.target_ent=12`(tent12i)를 붙인 `can_calql_t12i_s{1,2,3}`도 띄워 "보정이 살아남는 온도"에서의 효과를 본다(§20.4 soft Q 주의).
 
+**17:50~18:10 갱신 — 설계 실패 두 번과 현재 설계 (`CQL_NOTES_2026-09-07.md`에 로그와 함께 상세)**
+- 시도 1(타깃 `r+γQ̄(s′,π_dp(s′,w′))` + 평균형 벌점): 벌점이 부트스트랩 분포와 같아 1/(1−γ)로 증폭 → Can cql Q −9,500(수익 −100). 시도 2(IQL V 타깃 + 평균형 벌점): 기울기가 상수라 Q_data가 (r+α)/(1−γ)=+100으로, Q_ood가 −8,000으로 → 자기 제한 없음. **시도 3(현재, 15a36ea)**: IQL V 타깃 + `α(logsumexp{Q_ood_1..4, Q_data} − Q_data)`(데이터 행동을 집합에 넣어 ≥0·자기 제한) + Cal-QL 바닥 `max(Q_ood, G)`.
+- **이름·표기(GPT 검토 반영)**: 코드 키는 `cql`/`calql`이지만 정확히는 "IQL backup + anchored CQL(H)-style regularizer / + Cal-QL floor", 즉 **actor-free DSRL에 맞춘 CQL-style pretraining**. 포스터·문서에 이 한 줄을 반드시 밝힌다. `calql_prefill`은 "Cal-QL-pretrained critic + demo replay"이지 온라인에서도 regularizer를 쓰는 full Cal-QL이 아니다. `td`(59de4d9)는 prior 정책 FQE(`r+γQ̄(s′,π_dp(s′,w′))`, 벌점 없음) = 동료의 plain TD 칸.
+- **온라인 전 오프라인 통과 기준** (`scripts/check_pretrain.py pretrain_path=<.pt>`, 4,096 상태 × 4 노이즈): `Q_data − G`가 G 눈금의 수십 이내, calibration gap `E_wQ_ood − G` ≈ 0 또는 양수(calql), `Q_ood − Q_data` 음수이되 같은 자릿수(cql). **Q_data > 0 또는 Q_ood < 10×G면 폐기**하고 α만 낮춰 1-seed 오프라인 스윕(Can α∈{0.1,0.5,1,5}, Square α∈{0.01,0.1,0.5,1}). 목적함수는 더 바꾸지 않는다. `floored_frac≈1`인데 raw Q_ood ≪ G면 "바닥은 작동, critic은 미교정"으로 기록.
+- **우선순위**: ① Can td/cql/calql(리플레이 없음, 3 seed) ② Square hq 인과 ③ calql_t12i ④ calql_prefill ⑤ Square cql/calql은 오프라인 기준 통과 시에만 온라인.
+- **반증 조건("Can에서는 critic보다 온도가 지배")**: 같은 auto-α에서 calql 단독이 엔트로피 붕괴가 그대로인데도 dip을 완전히 없앰; calibration gap이 엔트로피 지표보다 seed별 dip 깊이·시점을 더 잘 예측; calql 단독이 calql_t12i와 같은 성능; 잘 교정된 critic에서 엔트로피 개입 효과가 사라짐. 반대로 calql이 iql처럼 dip을 얕게만 하고 calql_t12i에서만 dip이 없어지면 "교정은 출발점을, 엔트로피 붕괴가 전이의 방아쇠를" 구조.
+- 벌점 분포 = 증류 분포(N(0,I))는 버그가 아니라 목적에 부합(온라인 Q_W가 읽는 영역을 보수적으로). 순위 정보는 TD/IQL과 일반화에서 오고 CQL은 낮추기·Cal-QL은 그 한계만. 균등 상자 표본은 오늘 넣지 않음.
+
 ### 20.5 기타
 - Colab: G4(48 vCPU/176GB)는 Pro+에서만 보임. 이 워크로드는 RAM(run당 17GB)·CPU 바운드라 A100(83GB, 12 vCPU)은 유닛당 처리량이 절반 이하 → G4 배치를 돌리는 달에는 Pro+, 아니면 GCE.
 - `STATUS_2026-09-07.md`: 팀 공유용 진행상황 보고서(초안, AUC는 갱신됨). 수치 검증 워크플로는 세션 한도로 미완 — 배포 전에 §2 표와 한 번 더 대조할 것.
