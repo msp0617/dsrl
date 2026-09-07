@@ -1,6 +1,6 @@
 """Pre-train DSRL's critics on the offline demonstrations, without a simulator.
 
-Four methods, one script, so an online run differs from the baseline only in
+Five methods, one script, so an online run differs from the baseline only in
 where its initial critic weights come from:
 
   warmup  runs DSRL's own update (Algorithm 1) on the offline data for k steps.
@@ -12,6 +12,11 @@ where its initial critic weights come from:
           r + gamma * V(s'). No actor is involved and nothing is evaluated
           outside the data. Q_A is then distilled into Q_W exactly as the
           online loop does it (Algorithm 1, line 5).
+
+  td      plain TD: Q_A <- r + gamma * Q_A_target(s', pi_dp(s', w')), w' ~ N(0, I),
+          the value of the diffusion policy under its prior noise, with no
+          conservatism and no calibration. The rung between no pre-training
+          and cql/calql. Distilled into Q_W like iql.
 
   cql     iql's critic plus CQL's regulariser: the same expectile V(s) and
           the same target r + gamma * V(s'), and on top of the TD loss
@@ -364,6 +369,52 @@ def run_cql(model, cfg, pre, log, buf, calibrate):
     return value_net
 
 
+def run_td(model, cfg, pre, log, buf):
+    """Plain TD pre-training of Q_A: r + gamma Q_A_target(s', pi_dp(s', w')), w' ~ N(0, I).
+
+    The value of the diffusion policy under its prior noise, fitted by
+    ordinary TD with no conservatism and no calibration: the rung between
+    "no pre-training" and cql/calql, so that pre-training itself can be told
+    apart from what cql and calql add. Unlike iql it evaluates actions the
+    data does not contain (pi_dp's), so it can over-estimate them, which is
+    the point of the comparison. Same sampled-action diagnostic as cql.
+    """
+    gamma = float(cfg.train.discount)
+    n_samples = int(pre.cql_n_samples)
+    clip = float(pre.cql_noise_clip)
+    batch_size = int(pre.batch_size)
+    combine = str(cfg.train.critic_backup_combine_type)
+    critic, critic_target = model.critic, model.critic_target
+    critic.set_training_mode(True)
+    for step in range(1, int(pre.steps) + 1):
+        batch, returns = buf.sample(batch_size, with_returns=True)
+        obs, actions, next_obs = batch.observations, batch.actions, batch.next_observations
+        rewards, dones = batch.rewards, batch.dones
+        logging = step % int(pre.log_every) == 0 or step == int(pre.steps)
+        with th.no_grad():
+            next_actions = diffusion_actions(model, next_obs, prior_noise(batch_size, model, clip))
+            next_q = combine_q(critic_target(next_obs, next_actions), combine)
+            target = rewards + gamma * (1.0 - dones) * next_q
+            if logging:
+                obs_rep = obs.repeat_interleave(n_samples, dim=0)
+                ood_actions = diffusion_actions(model, obs_rep, prior_noise(batch_size * n_samples, model, clip))
+        q_values = critic(obs, actions)
+        td_loss = 0.5 * sum(F.mse_loss(q, target) for q in q_values)
+        critic.optimizer.zero_grad()
+        td_loss.backward()
+        critic.optimizer.step()
+        polyak_update(critic.parameters(), critic_target.parameters(), model.tau)
+        if logging:
+            with th.no_grad():
+                q_ood = th.cat(critic(obs_rep, ood_actions), dim=1).mean().item()
+            log("td", step, {
+                "critic_loss": td_loss.item(),
+                "q_mean": th.cat(q_values, dim=1).mean().item(),
+                "q_ood_mean": q_ood,
+                "return_mean": returns.mean().item() if returns is not None else float("nan"),
+            })
+
+
 # --------------------------------------------------------------------- main
 
 @hydra.main(
@@ -373,10 +424,10 @@ def main(cfg: OmegaConf):
     OmegaConf.resolve(cfg)
     pre = cfg.pretrain
     method = str(pre.method)
-    if method not in ("iql", "warmup", "cql", "calql"):
-        raise ValueError("pretrain.method must be iql, warmup, cql or calql, got %r" % method)
-    if method in ("cql", "calql") and int(pre.actor_steps) > 0:
-        raise ValueError("pretrain.actor_steps is iql-only: cql and calql go online with a random actor")
+    if method not in ("iql", "warmup", "td", "cql", "calql"):
+        raise ValueError("pretrain.method must be iql, warmup, td, cql or calql, got %r" % method)
+    if method in ("td", "cql", "calql") and int(pre.actor_steps) > 0:
+        raise ValueError("pretrain.actor_steps is iql-only: td, cql and calql go online with a random actor")
     if cfg.algorithm != "dsrl_na":
         raise NotImplementedError("offline pre-training is written for dsrl_na (it needs Q_A and Q_W)")
 
@@ -425,7 +476,7 @@ def main(cfg: OmegaConf):
     load_offline_data(model, data_path, 1)
     print("[data] %d transitions from %s" % (model.replay_buffer.size(), data_path), flush=True)
     buf = None
-    if method in ("cql", "calql"):
+    if method in ("td", "cql", "calql"):
         # sampled by index so that Cal-QL's return-to-go lines up with the rows
         buf = OfflineBuffer(data_path, model.device)
         if method == "calql":
@@ -437,7 +488,7 @@ def main(cfg: OmegaConf):
         "steps": int(pre.steps),
         "distill_steps": int(pre.distill_steps) if method != "warmup" else 0,
         "actor_steps": int(pre.actor_steps) if method != "warmup" else int(pre.steps),
-        "expectile": float(pre.expectile) if method != "warmup" else None,
+        "expectile": float(pre.expectile) if method in ("iql", "cql", "calql") else None,
         "cql_alpha": float(pre.cql_alpha) if method in ("cql", "calql") else None,
         "cql_n_samples": int(pre.cql_n_samples) if method in ("cql", "calql") else None,
         "cql_noise_clip": float(pre.cql_noise_clip) if method in ("cql", "calql") else None,
@@ -463,6 +514,9 @@ def main(cfg: OmegaConf):
         if int(pre.actor_steps) > 0:
             run_actor(model, cfg, pre, log)
             payload["actor"] = model.actor.state_dict()
+    elif method == "td":
+        run_td(model, cfg, pre, log, buf)
+        run_distill(model, pre, log)
     else:
         value_net = run_cql(model, cfg, pre, log, buf, calibrate=(method == "calql"))
         run_distill(model, pre, log)

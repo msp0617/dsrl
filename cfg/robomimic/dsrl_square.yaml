@@ -110,7 +110,7 @@ train:
   critic_backup_combine_type: min
 
 pretrain:
-  method: iql # iql | warmup | cql | calql
+  method: iql # iql | warmup | td | cql | calql
   steps: 50000
   distill_steps: 25000
   actor_steps: 0

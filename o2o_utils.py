@@ -36,7 +36,7 @@ except ImportError:  # torch-free tests stub stable_baselines3
         "ReplayBufferSamples", "observations actions next_observations dones rewards"
     )
 
-VARIANTS = ("baseline", "warmup", "iql", "cql", "calql")
+VARIANTS = ("baseline", "warmup", "iql", "td", "cql", "calql")
 MIX_MODES = ("none", "prefill", "fixed", "linear")
 
 STATE_FILE = "run_state.json"

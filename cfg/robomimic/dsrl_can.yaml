@@ -121,7 +121,7 @@ train:
 # warmup distills steps/utd*noise_critic_grad_steps times as a side effect of
 # DSRL's own update, so distill_steps is set to match it (50000/20*10).
 pretrain:
-  method: iql # iql | warmup | cql | calql
+  method: iql # iql | warmup | td | cql | calql
   steps: 50000
   distill_steps: 25000
   actor_steps: 0 # iql only; >0 also moves pi_W toward argmax Q_W before going online
