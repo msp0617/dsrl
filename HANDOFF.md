@@ -938,3 +938,11 @@ done
 - Colab: G4(48 vCPU/176GB)는 Pro+에서만 보임. 이 워크로드는 RAM(run당 17GB)·CPU 바운드라 A100(83GB, 12 vCPU)은 유닛당 처리량이 절반 이하 → G4 배치를 돌리는 달에는 Pro+, 아니면 GCE.
 - `STATUS_2026-09-07.md`: 팀 공유용 진행상황 보고서(초안, AUC는 갱신됨). 수치 검증 워크플로는 세션 한도로 미완 — 배포 전에 §2 표와 한 번 더 대조할 것.
 - 로컬(macOS) 분석 환경: `.venv`(numpy/pandas/matplotlib), CSV는 `~/Downloads/logs/`(csv_bundle.zip 전개본, 98 run).
+
+### 20.7 20:32 Drive 전수검사 — 온라인 24개는 실패한 것이 아니라 생성되지 않음
+- `scripts/inspect_runs.py`로 Drive를 직접 조사한 결과 예정했던 `can_{td,cql,calql}_s{1,2,3}`, `can_calql_{t12i,prefill}_s{1,2,3}`, `square_{td,cql,calql}_s{1,2,3}`가 **24개 모두 없음**. launch 함수는 redirection으로 `.out`을 먼저 만들므로, `td` meta mismatch로 즉시 죽었더라도 흔적은 있어야 한다. 따라서 현재 판정은 **resume 0 / 처음부터 24 / 실패 run 폐기 0**이며, 19:40의 “띄우는 중”은 실제 launch 완료 상태가 아니었다.
+- `td/cql/calql × {Can,Square} × seed 1..3` 사전학습 18개는 `.pt`와 `[done]`을 모두 확인했으므로 다시 돌리지 않는다. 유일한 `ERR`은 9/3의 오래된 `pretrain_test.out`이고 이번 배치와 무관하다.
+- 기존 97개 완료 run이 검사기에서 `stale`로 잘못 보였다. 원인은 `[done]`을 `.out`의 물리적 마지막 5줄에서만 찾은 것. 검사기는 이제 마지막 유의미한 lifecycle event를 사용하고 TensorBoard 컨테이너 `logs/robomimic-dsrl/`도 run으로 세지 않는다.
+- `td` mismatch 하나로 세 VM의 동시 종료를 설명할 수 없다. Can/Square의 cql·calql 프로세스는 남아 있어야 하고 t12i/prefill VM은 td와 무관하다. 세 VM이 함께 사라졌다면 compute unit 소진 또는 외부 종료 쪽이 더 일관된다. `write`는 마지막 파일 기록 시각이지 VM 사망 시각의 직접 증거는 아니다.
+- 체크포인트 간격 25k는 **온라인 학습 추가분** 기준이다. 초기 rollout을 포함한 raw `env_steps`에서 첫 체크포인트는 Can 약 49,024, Square 약 57,024다. 그 전 `ckpt none`은 처음부터다. `[mrr]`은 세 파일의 존재를 뜻할 뿐이며, 실제 resume 때 손상 검사가 실패하면 이전 슬롯로 fallback한다. 유효 checkpoint 후보가 있으면 초기 critic이 이미 checkpoint 안에 있으므로 원래 pretrain `.pt`의 존재를 다시 강제하지 않도록 수정했다(처음 시작할 때만 필요).
+- 재개 우선순위(hq 완료 반영): **Can 9 → calql_t12i 3 → calql_prefill 3 → Square 9**. 열린 Colab 사본의 셀 본문은 셀 안 `git pull`로 갱신되지 않으므로 최신 GitHub 노트북을 새로 열거나 온라인 셀이 실제로 `variant=$M`인지 확인한다.

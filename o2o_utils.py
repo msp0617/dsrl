@@ -495,6 +495,23 @@ class SpacesOnlyEnv(gymnasium.Env):
 
 # --------------------------------------------------------- pretrained weights
 
+def check_pretrain_path(variant, path, resuming=False):
+    """Require an offline artifact only when a run starts from scratch.
+
+    A resumed checkpoint already contains the initialized critics.  Requiring
+    the original pre-training artifact as well makes an otherwise complete
+    checkpoint unusable after old artifacts are archived or moved.
+    """
+    if variant == "baseline" or resuming:
+        return
+    if not path:
+        raise ValueError(
+            "variant=%s needs pretrain_path=<file written by offline_pretrain.py>" % variant
+        )
+    if not os.path.exists(path):
+        raise FileNotFoundError("pretrain_path does not exist: %s" % path)
+
+
 def check_pretrain_meta(meta, cfg, variant):
     """Refuse weights that were made for another variant or another network."""
     method = meta.get("method")

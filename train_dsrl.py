@@ -34,6 +34,7 @@ from o2o_utils import (
     build_agent,
     check_buffer_capacity,
     check_fingerprint,
+    check_pretrain_path,
     config_fingerprint,
     load_pretrained_weights,
     read_run_states,
@@ -93,16 +94,12 @@ def main(cfg: OmegaConf):
     num_env = cfg.env.n_envs
 
     # The variant decides only where the initial critic weights come from:
-    # baseline starts random, warmup and iql load a file from offline_pretrain.py.
+    # baseline starts random; every other variant loads a matching file from
+    # offline_pretrain.py.
     variant = str(cfg.get("variant", "baseline") or "baseline")
     pretrain_path = str(cfg.get("pretrain_path", "") or "")
     if variant not in VARIANTS:
         raise ValueError("variant must be one of %s, got %r" % (", ".join(VARIANTS), variant))
-    if variant != "baseline" and not pretrain_path:
-        raise ValueError("variant=%s needs pretrain_path=<file written by offline_pretrain.py>" % variant)
-    if variant != "baseline" and not os.path.exists(pretrain_path):
-        raise FileNotFoundError("pretrain_path does not exist: %s" % pretrain_path)
-
     # Offline replay mix. prefill is the upstream load_offline_data path; fixed
     # and linear sample the demonstrations from a separate buffer at a set
     # share of each batch, so they must not also be put into the online buffer.
@@ -135,6 +132,7 @@ def main(cfg: OmegaConf):
     # and the diffusion policy are built, which costs minutes.
     ckpt_dir = resolve_ckpt_dir(cfg)
     candidates = read_run_states(ckpt_dir) if cfg.get("resume", True) else []
+    check_pretrain_path(variant, pretrain_path, resuming=bool(candidates))
     if candidates:
         check_fingerprint(candidates[0], cfg)
         if all(c["replay_buffer_path"] is None for c in candidates):

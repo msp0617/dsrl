@@ -267,6 +267,31 @@ def test_pretrain_meta_checks():
     o2o_utils.check_pretrain_meta(meta, make_cfg(n_envs=1), "iql")
 
 
+def test_td_pretrain_requires_td_variant():
+    cfg = make_cfg()
+    meta = {"method": "td", "network": o2o_utils.network_fingerprint(cfg)}
+    o2o_utils.check_pretrain_meta(meta, cfg, "td")
+    try:
+        o2o_utils.check_pretrain_meta(meta, cfg, "cql")
+    except RuntimeError as exc:
+        assert "'td' weights" in str(exc) and "variant=cql" in str(exc)
+    else:
+        raise AssertionError("td weights must not be launched as variant=cql")
+
+
+def test_pretrain_artifact_is_required_only_for_a_fresh_run():
+    missing = os.path.join(tempfile.mkdtemp(), "archived_td.pt")
+    try:
+        o2o_utils.check_pretrain_path("td", missing, resuming=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("a fresh td run must have its pre-training artifact")
+
+    o2o_utils.check_pretrain_path("td", missing, resuming=True)
+    o2o_utils.check_pretrain_path("baseline", "", resuming=False)
+
+
 def test_run_fingerprint_includes_variant():
     baseline = o2o_utils.config_fingerprint(make_cfg())
     assert baseline["variant"] == "baseline"

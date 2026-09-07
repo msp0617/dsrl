@@ -98,8 +98,9 @@ Re-running the same command after a session dies picks up where it stopped.
 | `baseline` | random (upstream DSRL-NA) | random |
 | `warmup` | DSRL's own update run on the offline data for `pretrain.steps` | trained alongside, loaded (entropy coefficient only with `pretrain.load_ent_coef`) |
 | `iql` | IQL on the offline data, then distilled into Q_W | random (unless `pretrain.actor_steps > 0`) |
-| `cql` | TD toward `r + γ Q̄_A(s', π_dp(s', w'))`, `w' ~ N(0, I)`, plus CQL's penalty `cql_alpha · (E_w Q_A(s, π_dp(s, w)) − Q_A(s, a_data))`; distilled into Q_W | random |
-| `calql` | `cql` with Cal-QL's floor: the sampled Q in the penalty is `max(Q_A, G)`, `G` the demonstration's return-to-go (`returns` in the chunk file, built with `--gamma` = `train.discount`) | random |
+| `td` | plain TD toward `r + γ Q̄_A(s', π_dp(s', w'))`, `w' ~ N(0, I)`, then distilled into Q_W | random |
+| `cql` | IQL's in-sample `r + γ V(s')` target plus an anchored log-sum-exp penalty over sampled and data actions; distilled into Q_W | random |
+| `calql` | `cql` with Cal-QL's floor: sampled Q in the penalty is `max(Q_A, G)`, where `G` is the demonstration return-to-go | random |
 
 All pretrained variants are produced by `offline_pretrain.py`, which needs no
 simulator: the agent is built on `SpacesOnlyEnv`, which carries the task's
@@ -119,6 +120,12 @@ random at that point. IQL fits `V(s)` by expectile regression to `Q_A(s, a)` on
 actions present in the data and uses `r + γ V(s')`: no actor, nothing queried
 outside the data. Distillation into Q_W is then the online loop's own
 `update_noise_critic`, unchanged.
+
+TD instead evaluates the diffusion prior directly with ordinary bootstrapping.
+CQL/Cal-QL keep IQL's in-sample target and add the anchored conservative term
+`α(temp·logsumexp({Q_ood, Q_data}/temp) − Q_data)`. Including `Q_data` inside
+the log-sum-exp makes the penalty non-negative and self-limiting; these are
+actor-free, DSRL-specific CQL-style pretraining variants, not full online CQL.
 
 The warm-up stage also anneals the entropy coefficient, and DSRL's initial
 alpha of 1 with a target entropy of 0 dominates the first few thousand actor
@@ -238,12 +245,12 @@ demonstration's discounted return-to-go from each chunk's start state
 a last partial chunk). `calql` needs it and refuses a file without it or with
 another gamma (`returns_gamma`); the buffer loaders ignore extra keys.
 
-`cql` and `calql` share everything but the floor: the same target (the
-diffusion policy under its prior noise, so no actor is involved), the same
-`cql_alpha`, the same `cql_n_samples` noises per state fed through `π_dp` (the
-critic takes actions, never noise). `pretrain.cql_noise_clip` > 0 clips the
-prior to the online noise box `±action_magnitude`; 0 keeps `N(0, I)` as the
-distillation does. The pretraining log reports `q_mean` (data actions),
+`cql` and `calql` share everything but the floor: the same IQL value target,
+the same `cql_alpha`, and the same `cql_n_samples` noises per state fed through
+`π_dp` for the penalty (the critic takes actions, never noise).
+`pretrain.cql_noise_clip` > 0 clips the prior to the online noise box
+`±action_magnitude`; 0 keeps `N(0, I)` as the distillation does. The pretraining
+log reports `q_mean` (data actions),
 `q_ood_mean` (sampled actions), `penalty` and `floored_frac`, the share of
 sampled values the floor replaced, which is the number that separates a
 working Cal-QL from a scale collapse.
@@ -254,6 +261,9 @@ working Cal-QL from a scale collapse.
 stub modules, so slot alternation, the fallback to the older slot and the config
 fingerprint can be exercised without torch or mujoco.
 `python scripts/test_make_offline_chunks.py` covers the data conversion.
+`python scripts/test_offline_pretrain.py` covers TD/CQL/Cal-QL algebra, and the
+standard-library-only `test_inspect_runs.py` and `test_notebook_launches.py`
+cover Drive auditing and the TD notebook mapping.
 
 ## Known upstream issue
 

@@ -16,7 +16,7 @@ normalization_path: ./dppo/log/robomimic/${env_name}/normalization.npz
 dppo_path: ./dppo
 
 algorithm: dsrl_na
-variant: baseline # baseline | warmup | iql (warmup/iql need a pretrain file; none exists for Square yet)
+variant: baseline # baseline | warmup | iql | td | cql | calql (non-baseline variants need a matching pretrain file)
 pretrain_path: ''
 
 seed: 1

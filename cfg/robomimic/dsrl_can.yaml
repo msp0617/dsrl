@@ -13,9 +13,10 @@ normalization_path: ./dppo/log/robomimic/${env_name}/normalization.npz
 
 algorithm: dsrl_na # options are: dsrl_na, dsrl_sac
 # Offline-to-online study. The variant only changes where the initial critic
-# weights come from; warmup and iql load a file made by offline_pretrain.py.
-variant: baseline # baseline | warmup | iql
-pretrain_path: '' # required for warmup and iql
+# weights come from; every non-baseline variant loads a matching file made by
+# offline_pretrain.py.
+variant: baseline # baseline | warmup | iql | td | cql | calql
+pretrain_path: '' # required for every non-baseline variant
 
 seed: 1
 device: cuda:0

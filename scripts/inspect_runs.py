@@ -12,12 +12,16 @@ evaluations and the last one, the resumable checkpoint (env steps per slot and
 whether the model / replay-buffer / rng files are there; ``!`` marks a missing
 file), and a one-word state:
 
-    done      the .out ends with [done]
-    error     the .out has a Traceback (the last error line is printed)
-    stale     no [done], nothing written for --stale-min minutes: the VM died.
-              Relaunching the same command resumes from the checkpoint shown,
-              or from scratch when there is none.
+    done      the last lifecycle event in the .out is [done]
+    error     the last lifecycle event is an uncaught error
+    stale     no terminal event and nothing written for --stale-min minutes;
+              the run is inactive or was interrupted (this does not query the VM).
+              Relaunching the same command tries the checkpoint shown, or starts
+              from scratch when there is none.
     running   written recently
+
+Checkpoint letters report file presence, not successful deserialization; resume
+validates the model archive and falls back across slots when one is damaged.
 
 Then the pre-training artifacts (``logs/pretrain/*.pt``, ``logs/pretrain*.out``)
 and the csv bundle. Finished runs are hidden unless --all or --only is given.
@@ -33,7 +37,10 @@ import sys
 import time
 
 KST = 9 * 3600
-MARK = re.compile(r"\[(done|eval|resume|pretrain|budget)\]|Traceback|Error|Killed|MemoryError")
+PROGRESS_MARK = re.compile(r"\[(done|eval|resume|pretrain|budget)\]")
+EXCEPTION_LINE = re.compile(
+    r"^(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?(?:Error|Exception)(?::|$)"
+)
 
 
 def kst(ts):
@@ -53,34 +60,63 @@ def last_lines(path, n=400):
 
 
 def out_summary(path):
-    """(last marker line, error line or None, ends with [done])"""
+    """Return ``(last event, active error, done)`` for a process log.
+
+    A run may leave ordinary shutdown output after ``[done]``, and a log may
+    contain an old failed attempt followed by a successful retry.  Therefore
+    state follows the *last lifecycle event*, rather than the last physical
+    five lines or any error-looking word anywhere in the tail.  In particular,
+    ``[resume] ... EOFError ... falling back`` is progress, not a fatal error.
+    """
     lines = last_lines(path)
-    marker, error = "", None
+    events = []
     for line in lines:
-        if MARK.search(line):
-            marker = line.strip()[:110]
-        if line.startswith("Traceback") or "Error" in line or "Killed" in line:
-            error = line.strip()[:160]
-    if error and error.startswith("Traceback"):
-        # the message itself is the last non-indented, non-empty line
-        for line in reversed(lines):
-            if line.strip() and not line.startswith(" "):
-                error = line.strip()[:160]
-                break
-    done = any("[done]" in line for line in lines[-5:])
+        stripped = line.strip()
+        progress = PROGRESS_MARK.search(line)
+        if progress:
+            events.append((progress.group(1), stripped))
+            continue
+        if (
+            stripped.startswith("Traceback (most recent call last)")
+            or stripped.startswith("Error executing job with overrides")
+            or EXCEPTION_LINE.match(stripped)
+            or re.search(r"(?:^|:\s*)Killed(?:\s|$)", stripped)
+        ):
+            events.append(("error", stripped))
+
+    if not events:
+        return "", None, False
+    kind, event = events[-1]
+    marker = event[:110]
+    error = event[:160] if kind == "error" else None
+    done = kind == "done"
     return marker, error, done
 
 
 def csv_tail(path):
-    """(row count, last row) without pandas."""
+    """Return the complete-row count and tail, ignoring an interrupted append."""
     if not os.path.exists(path):
         return 0, None
     n, last = 0, None
-    with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            n += 1
-            last = row
+    try:
+        with open(path, newline="", errors="replace") as f:
+            for row in csv.DictReader(f):
+                # A VM can die between two writes to the final CSV row.  The
+                # DictReader represents missing trailing columns as None.
+                if not row or None in row or any(value is None for value in row.values()):
+                    continue
+                n += 1
+                last = row
+    except (OSError, csv.Error):
+        pass
     return n, last
+
+
+def float_or_nan(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def checkpoint_summary(ckpt_dir):
@@ -88,13 +124,28 @@ def checkpoint_summary(ckpt_dir):
     if not os.path.exists(state):
         return "none"
     try:
-        raw = json.load(open(state))
+        with open(state) as f:
+            raw = json.load(f)
     except (OSError, ValueError) as e:
         return "run_state.json unreadable (%s)" % e.__class__.__name__
+    if not isinstance(raw, dict):
+        return "run_state.json unreadable (schema)"
     slots = raw.get("slots") or {raw.get("slot", "a"): raw}
+    if not isinstance(slots, dict):
+        return "run_state.json unreadable (schema)"
+
+    def env_steps(slot):
+        entry = slots.get(slot)
+        if not isinstance(entry, dict):
+            return -1
+        try:
+            return int(entry.get("env_steps", -1))
+        except (TypeError, ValueError):
+            return -1
+
     parts = []
-    for slot in sorted(slots, key=lambda s: -int(slots[s].get("env_steps", -1))):
-        env = int(slots[slot].get("env_steps", -1))
+    for slot in sorted(slots, key=lambda s: -env_steps(s)):
+        env = env_steps(slot)
         files = []
         for name in ("model_%s.zip", "replay_buffer_%s.pkl", "rng_%s.pkl"):
             files.append(name[0] + ("" if os.path.exists(os.path.join(ckpt_dir, name % slot)) else "!"))
@@ -107,6 +158,28 @@ def latest_mtime(exp_dir, out_path):
     paths = [out_path] + glob.glob(os.path.join(exp_dir, "*.csv")) + glob.glob(os.path.join(exp_dir, "checkpoint", "*"))
     ts = [os.path.getmtime(p) for p in paths if os.path.exists(p)]
     return max(ts) if ts else 0
+
+
+def find_experiments(logs):
+    """Find run artifact stems without treating container dirs as runs."""
+    outs = {
+        os.path.basename(p)[:-4]
+        for p in glob.glob(os.path.join(logs, "*.out"))
+        if not os.path.basename(p).startswith("pretrain")
+    }
+    dirs = set()
+    for path in glob.glob(os.path.join(logs, "*")):
+        name = os.path.basename(path)
+        if not os.path.isdir(path) or name == "pretrain":
+            continue
+        has_run_artifact = (
+            os.path.exists(os.path.join(path, "eval_log.csv"))
+            or os.path.exists(os.path.join(path, "train_log.csv"))
+            or os.path.exists(os.path.join(path, "checkpoint", "run_state.json"))
+        )
+        if has_run_artifact:
+            dirs.add(name)
+    return sorted(dirs | outs)
 
 
 def main():
@@ -123,9 +196,7 @@ def main():
     now = time.time()
     print("now %s KST   logs=%s" % (kst(now), logs))
 
-    dirs = {os.path.basename(d) for d in glob.glob(os.path.join(logs, "*")) if os.path.isdir(d) and os.path.basename(d) != "pretrain"}
-    outs = {os.path.basename(p)[:-4] for p in glob.glob(os.path.join(logs, "*.out")) if not os.path.basename(p).startswith("pretrain")}
-    exps = sorted(dirs | outs)
+    exps = find_experiments(logs)
     if prefixes:
         exps = [e for e in exps if any(e.startswith(p) for p in prefixes)]
     rows = []
@@ -152,7 +223,9 @@ def main():
     for mtime, exp, state, marker, error, n_eval, last_eval, last_train, ckpt in shown:
         ev = "no eval"
         if last_eval:
-            ev = "%d evals, last env=%s succ=%.2f" % (n_eval, last_eval.get("env_steps"), float(last_eval.get("success_rate", "nan")))
+            ev = "%d evals, last env=%s succ=%.2f" % (
+                n_eval, last_eval.get("env_steps"), float_or_nan(last_eval.get("success_rate"))
+            )
         tr = "train env=%s" % last_train.get("env_steps") if last_train else "train -"
         print("%-26s %-7s write %s | %s | %s | ckpt %s" % (exp, state, kst(mtime), ev, tr, ckpt))
         print("    out: %s" % (marker or "-"))
