@@ -66,41 +66,43 @@ class FakeModel:
         return noise + obs[:, :1, None]  # a marker so the row order can be checked
 
 
-def test_penalty_is_alpha_times_ood_minus_data():
+def test_penalty_is_logsumexp_over_unseen_and_data_minus_data():
     q_data = th.tensor([[1.0], [2.0]])
     q_ood = th.tensor([[3.0, 5.0], [0.0, 2.0]])
     penalty, floored = op.conservative_penalty(q_data, q_ood, alpha=2.0)
-    # rows: (4 - 1) and (1 - 2), mean 1, times alpha
-    assert abs(penalty.item() - 2.0) < 1e-6
-    assert floored.item() == 0.0
+    expect = 2.0 * (th.logsumexp(th.tensor([[3.0, 5.0, 1.0], [0.0, 2.0, 2.0]]), dim=1) - q_data[:, 0]).mean()
+    assert abs(penalty.item() - expect.item()) < 1e-5
+    assert penalty.item() > 0 and floored.item() == 0.0
 
 
-def test_calql_floor_lifts_ood_values_to_the_return():
-    q_data = th.tensor([[1.0], [2.0]])
-    q_ood = th.tensor([[3.0, 5.0], [0.0, 2.0]])
-    returns = th.tensor([[4.5], [1.5]])
-    penalty, floored = op.conservative_penalty(q_data, q_ood, alpha=2.0, returns=returns)
-    # rows: mean(4.5, 5) - 1 = 3.75 and mean(1.5, 2) - 2 = -0.25, mean 1.75, times alpha
-    assert abs(penalty.item() - 3.5) < 1e-6
-    assert abs(floored.item() - 0.5) < 1e-6, "3 and 0 were below their returns, 5 and 2 were not"
+def test_penalty_vanishes_once_the_data_action_is_the_maximum():
+    q_data = th.full((4, 1), 100.0, requires_grad=True)
+    q_ood = th.zeros(4, 3, requires_grad=True)
+    penalty, _ = op.conservative_penalty(q_data, q_ood, alpha=5.0)
+    assert penalty.item() < 1e-3, "nothing unseen is valued above the data action"
+    penalty.backward()
+    assert q_data.grad.abs().max() < 1e-6 and q_ood.grad.abs().max() < 1e-6, "no push either way"
 
 
-def test_penalty_gradient_pushes_data_up_and_unseen_down_but_not_below_the_floor():
+def test_penalty_gradient_pushes_unseen_down_and_data_up_only_while_unseen_is_higher():
+    q_data = th.tensor([[1.0]], requires_grad=True)
+    q_ood = th.tensor([[50.0, -50.0]], requires_grad=True)
+    penalty, _ = op.conservative_penalty(q_data, q_ood, alpha=2.0)
+    penalty.backward()
+    assert q_ood.grad[0, 0] > 1.9, "the unseen action above the data action takes the push"
+    assert q_ood.grad[0, 1] < 1e-6, "the one far below gets none"
+    assert q_data.grad[0, 0] < -1.9, "and the data action is pushed up"
+
+
+def test_calql_floor_stops_the_push_below_the_return_and_lifts_data_to_it():
     q_data = th.tensor([[1.0], [2.0]], requires_grad=True)
-    q_ood = th.tensor([[3.0, 5.0], [0.0, 2.0]], requires_grad=True)
-    returns = th.tensor([[4.5], [1.5]])
-    penalty, _ = op.conservative_penalty(q_data, q_ood, alpha=2.0, returns=returns)
+    q_ood = th.tensor([[3.0, -50.0], [-50.0, -50.0]], requires_grad=True)
+    returns = th.tensor([[-10.0], [20.0]])
+    penalty, floored = op.conservative_penalty(q_data, q_ood, alpha=2.0, returns=returns)
+    assert abs(floored.item() - 0.75) < 1e-6, "three of the four unseen values sat below their return"
     penalty.backward()
-    assert (q_data.grad < 0).all(), "descending the penalty raises Q on data actions"
-    assert q_ood.grad[0, 1] > 0 and q_ood.grad[1, 1] > 0, "and lowers Q on unseen actions above the floor"
-    assert q_ood.grad[0, 0] == 0 and q_ood.grad[1, 0] == 0, "floored entries get no push"
-
-
-def test_without_returns_every_unseen_action_is_pushed():
-    q_ood = th.tensor([[3.0, 5.0], [0.0, 2.0]], requires_grad=True)
-    penalty, _ = op.conservative_penalty(th.zeros(2, 1), q_ood, alpha=1.0)
-    penalty.backward()
-    assert (q_ood.grad > 0).all()
+    assert q_ood.grad[0, 0] > 0 and q_ood.grad[0, 1] == 0 and (q_ood.grad[1] == 0).all(), "floored entries get no push"
+    assert q_data.grad[1, 0] < -1.9, "row 2: the return (20) is above the data action (2), so it is pulled up"
 
 
 def test_prior_noise_shape_and_clip():

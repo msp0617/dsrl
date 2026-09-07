@@ -17,9 +17,11 @@ where its initial critic weights come from:
           the same target r + gamma * V(s'), and on top of the TD loss
           cql_alpha * (E_w Q_A(s, pi_dp(s, w)) - Q_A(s, a_data)) pushes down
           the actions pi_dp can produce but the data does not hold, and pushes
-          up the ones it does. The target never sees the sampled actions, so
-          the penalty cannot feed back through the bootstrap. cql_alpha=0 is
-          iql. Distilled into Q_W like iql.
+          up the ones it does, in CQL(H)'s log-sum-exp form with the data
+          action inside the set (so the push stops once unseen actions sit
+          below the data action). The target never sees the sampled actions,
+          so the penalty cannot feed back through the bootstrap. cql_alpha=0
+          is iql. Distilled into Q_W like iql.
 
   calql   the same with Cal-QL's floor: in the penalty, Q_A of a sampled action
           is replaced by max(Q_A, G), G the demonstration's return-to-go from s
@@ -233,15 +235,23 @@ def diffusion_actions(model, obs, noise):
     return actions.reshape(obs.shape[0], model.diffusion_act_chunk * model.diffusion_act_dim)
 
 
-def conservative_penalty(q_data, q_ood, alpha, returns=None):
-    """CQL's regulariser on one critic head; Cal-QL's floor when returns is given.
+def conservative_penalty(q_data, q_ood, alpha, returns=None, temp=1.0):
+    """CQL(H)'s regulariser on one critic head; Cal-QL's floor when returns is given.
 
     q_data (B, 1): Q of the action in the data. q_ood (B, n): Q of n actions
-    pi_dp produces from prior noise, which the data does not contain. Pushing
-    the first up and the second down is CQL with rho = pi_dp o N(0, I).
+    pi_dp produces from prior noise, which the data does not contain.
+      penalty = alpha * (temp * logsumexp({q_ood_1..n, q_data} / temp) - q_data)
+    The data action sits inside the log-sum-exp, so the penalty is never
+    negative and it is self-limiting: an unseen action is pushed down only
+    while it is valued above the data action (its softmax weight vanishes
+    below), and the data action is pushed up only while something else is
+    the maximum. (A plain alpha * (mean q_ood - q_data) has a constant
+    gradient: with no actor tying the sampled actions to the target, q_ood
+    fell to -8,000 and q_data rose by alpha/(1-gamma) = +500 on Can.)
     Cal-QL replaces q_ood by max(q_ood, G), G (B, 1) the demonstration's
-    return-to-go from s: the push stops once an unseen action is valued below
-    what the data actually earned, so the scale of Q survives.
+    return-to-go from s: the push on an unseen action stops once it is
+    valued below what the data actually earned, and a data action valued
+    below G is pulled up to it.
     Returns the penalty and the fraction of q_ood entries the floor replaced.
     """
     if returns is not None:
@@ -249,7 +259,9 @@ def conservative_penalty(q_data, q_ood, alpha, returns=None):
         q_ood = th.maximum(q_ood, returns.expand_as(q_ood))
     else:
         floored = th.zeros((), device=q_ood.device)
-    penalty = alpha * (q_ood.mean(dim=1, keepdim=True) - q_data).mean()
+    cat = th.cat([q_ood, q_data], dim=1)
+    lse = temp * th.logsumexp(cat / temp, dim=1, keepdim=True)
+    penalty = alpha * (lse - q_data).mean()
     return penalty, floored
 
 
