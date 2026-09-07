@@ -71,6 +71,8 @@ def test_new_vm3_is_a_self_contained_square_launch_plan():
     assert "--config-name=dsrl_square.yaml" in code
     assert "scripts/check_pretrain.py --config-path" not in code
     assert "check_states=4096" in code
+    assert "np.isclose(gamma, 0.999, rtol=0.0, atol=1e-6)" in code
+    assert "< 1e-9" not in code
     assert "online launch is not blocked" in code
     assert "td) V=cql" not in code
     assert "runtime.unassign()" in code
