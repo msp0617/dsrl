@@ -856,13 +856,66 @@ cat $PROJ/logs/base_policy_eval.csv
 - 동료: Q_A를 오프라인에서 ② plain TD / ③ CQL / ④ Cal-QL(max(Q, G_t) 바닥)로 사전학습, 온라인 코드 불변, 지표 T50/T80(시행 횟수), 3회 반복(매번 데모·π_dp 새로), 8차원 노이즈, G∈[0,1]. 결과: Cal-QL T50 2.7배 단축, plain 무효, CQL 3배 느림(Q −9 눈금 붕괴). 메커니즘 주장: Q_A 과대평가(+0.71) → Q_W → π_W.
 - 우리와의 관계: (1) 동료의 질문은 우리의 **출발 가설**(critic 초기화)과 같고, 우리는 Can에서 critic 사전학습(iql·warmupc)이 dip을 얕게만 하고 시점·최종을 못 바꾼다고 결론 → 원인을 auto-α 엔트로피 붕괴로 옮김. (2) 동료 글에는 SAC 온도·목표 엔트로피·엔트로피가 변수로 없고(글의 α=1.0은 CQL 계수), dip(29% 아래 하락) 여부도 보고 안 됨(T50은 단조 상승과 dip을 구분 못 함). (3) 동료 ①(논문 그대로, 데모를 리플레이에)은 우리 `baseline`이 아니라 `mix_prefill`에 대응. (4) "plain 사전학습 무효"는 두 연구 일치. (5) 과대평가 주장은 우리 진단(`q_start − mc_return`은 α가 작아진 뒤에만 유효; 초기 Q_W는 엔트로피 보너스 오프셋 +55~+175로 덮임; 보상 ×0.25~×2·hard backup이 첫 하락 시점을 못 움직임)과 직접 맞대기 어려움 — 동료의 "critic 오차"가 soft Q를 어떻게 다뤘는지 불명. 워크플로 교차검증은 세션 한도로 미완(초안만).
 
-### 20.4 축 A 확장: CQL / Cal-QL 사전학습 (GPT가 구현 중, 저장소 제약 체크리스트)
+### 20.4 축 A 확장: CQL / Cal-QL 사전학습 (**구현 완료 5bf75dc**, 아래 체크리스트는 구현에 반영됨. 실행 셀은 이 절 끝)
 - 넣을 자리: `offline_pretrain.py` `run_iql` 옆에 `run_cql`(Cal-QL은 플래그) → 기존 `run_distill`로 Q_W 증류 → 같은 payload(critic, critic_target, critic_noise). `main`의 `method in ("iql","warmup")`, `o2o_utils.VARIANTS`, `check_pretrain_meta`(method == variant)에 `cql`, `calql` 등록. `train_dsrl.py`는 그대로.
 - **"안 해 본 행동"은 반드시 π_dp를 통과**: w ~ N(0,I)(및 π_W) → `model.diffusion_policy(obs, w.reshape(-1, act_steps, action_dim), return_numpy=False)` → Q_A(s, a). `o2o_utils.py:176-181` 방식 그대로. w를 Q_A에 직접 넣으면 조용히 틀린다.
 - **G_t가 데이터에 없다**: `can_train_offline.npz` 키는 states/states_next/actions/rewards/terminals/quality뿐. `make_offline_chunks.py` `build_chunks`의 궤적 루프에서 청크 단위 return-to-go `returns`를 추가로 저장해야 한다(stride 1, 청크 보상 = 4스텝 합 − 4·reward_offset ∈ [−4, 0], 할인은 **청크당 γ=0.99**(SB3 gamma, online과 동일; 스텝당 0.99⁴가 아님)). 데모는 전부 성공이라 G ∈ 약 [−200, 0]. Drive의 npz를 다시 만들어 올려야 함(`--check_against` 검증 포함). 동료의 G∈[0,1]·α=1.0 값은 그대로 쓰면 안 된다.
 - **soft Q 문제(핵심 주의)**: 온라인 critic 타깃은 `r + γ(Q̄ − α·log π′)`이고 α는 1.0에서 시작한다. Cal-QL이 hard return에 맞춘 눈금은 25k 안에 엔트로피 보너스(+55~+175)에 덮인다(15절 iql: Q_W −145 → +70). 따라서 조건은 **{cql, calql} × {auto-α(논문), tent12i 또는 고정 0.3}** 으로 짜야 "보정이 살아남는 온도"에서의 효과를 볼 수 있다. auto-α 단독에서 효과가 없으면 그것이 곧 결과다(Can에서 동료 주장의 경계).
 - CQL 계수 α_cql는 Q 스케일(≈ −100)에 맞춰 스윕 필요(동료 1.0은 Q∈[0,1] 기준). 로그 `q_mean`(데이터 행동)과 π_dp 샘플 행동의 Q 평균을 같이 찍어 눈금 붕괴(동료 ③의 −9)를 감시.
 - 사전학습은 시뮬레이터 없이 GPU만 필요(`SpacesOnlyEnv`), 50k step. 사전학습 .pt 하나를 온라인 seed들이 공유.
+
+**구현(5bf75dc)**: `pretrain.method=cql|calql`, `o2o_utils.VARIANTS`에 등록, `check_pretrain_meta`는 method==variant 그대로. 타깃 `r + γ Q̄_A(s′, π_dp(s′, w′))`, w′~N(0,I)(actor 무관). 벌점 `cql_alpha·(E_w Q_A(s, π_dp(s,w)) − Q_A(s, a_data))`, 노이즈 `cql_n_samples`개/상태, 반드시 π_dp 통과. calql은 벌점 안의 표본 Q를 `max(Q, G)`로(G = `returns`). 둘 다 `distill_steps`(25k)로 Q_W 증류, actor 저장 안 함(`actor_steps>0`이면 거부). 설정 기본값 `cql_alpha 5.0`(Q≈−100 눈금; 동료의 1.0은 Q∈[0,1] 기준), `cql_n_samples 4`, `cql_noise_clip 0`(N(0,I) 그대로, `update_noise_critic`과 동일; >0이면 ±clip). `make_offline_chunks.py --gamma 0.99`가 `returns`·`returns_gamma`를 씀(청크당 γ, 궤적 끝 자투리는 마지막 부분 청크). calql은 `returns` 없거나 γ 불일치면 시작 전 거부. 사전학습 로그에 `q_mean`(데이터 행동), `q_ood_mean`(표본 행동), `penalty`, `floored_frac`(바닥이 대신한 표본 비율). 테스트 44개 통과(`scripts/test_offline_pretrain.py` 7개 신규; 로컬 `.venv`에 torch CPU 설치됨).
+
+**실행 (Colab, 환경 복원 뒤 `git pull origin o2o`)**
+```bash
+%%bash
+# 1) 청크 npz를 returns 포함으로 다시 만든다 (hdf5는 $PROJ/robomimic_raw/ 아래). 상태 비트 일치(--check_against)까지 확인.
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl && source /content/env.sh && cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project
+H5=$(find $PROJ/robomimic_raw -name "low_dim_v141.hdf5" -path "*can*" | head -n 1); echo "hdf5: $H5"
+python scripts/make_offline_chunks.py --load_path "$H5" \
+  --normalization_path dppo/log/robomimic/can/normalization.npz --check_against dppo/log/robomimic/can/train.npz \
+  --gamma 0.99 --save_path $PROJ/offline/can_train_offline.npz
+python -c "import numpy as np; d=np.load('$PROJ/offline/can_train_offline.npz'); print(sorted(d.files), d['returns'].min(), d['returns'].mean(), float(d['returns_gamma']))"
+```
+기대: 키에 `returns`, `returns_gamma`가 있고 returns가 약 [−200, 0], 평균 −100 근처. (기존 run은 이 파일의 states/actions/rewards/terminals만 읽으므로 덮어써도 무방.)
+```bash
+%%bash
+# 2) 스모크 (각 1~2분): 200 step 사전학습 + 100 step 증류가 [done]까지 가는지, calql의 floored_frac이 0과 1 사이인지
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl && source /content/env.sh && cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project
+for M in cql calql; do
+  python offline_pretrain.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml pretrain.method=$M seed=0 \
+    pretrain.steps=200 pretrain.distill_steps=100 pretrain.log_every=50 pretrain.out_path=$PROJ/logs/pretrain/smoke_$M.pt \
+    offline_data_path=$PROJ/offline/can_train_offline.npz log_dir=$PROJ/logs 2>&1 | grep "\[cql\]\|\[calql\]\|\[distill\]\|\[done\]\|Error\|Traceback"
+done
+```
+```bash
+%%bash
+# 3) 본 사전학습: seed 1..3 × {cql, calql}, 50k + 증류 25k. 시뮬레이터 불필요. 스텝당 π_dp 호출이 5회(타깃 1 + 표본 4)라 warmup보다 느림.
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl && source /content/env.sh && cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project; mkdir -p $PROJ/logs/pretrain
+for SEED in 1 2 3; do
+  nohup bash -c "for METHOD in cql calql; do
+    python offline_pretrain.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml pretrain.method=\$METHOD seed=$SEED \
+      offline_data_path=$PROJ/offline/can_train_offline.npz log_dir=$PROJ/logs; done" > $PROJ/logs/pretrain_cql_s${SEED}.out 2>&1 &
+done
+```
+결과 `$PROJ/logs/pretrain/{cql,calql}_can_s{1,2,3}.pt` + `_log.csv`. 판단: cql의 `q_ood_mean`이 `q_mean`보다 훨씬 아래로 계속 내려가며 둘 다 음수로 폭주하면 동료 ③의 눈금 붕괴(→ `cql_alpha` 낮춰 재실행); calql은 `floored_frac`이 0.2~0.8 사이에서 안정돼야 정상.
+```bash
+%%bash
+# 4) 온라인 (축 A 통제: offline_mix.mode=none, load_offline_data=False = 기본값, actor·α 로드 없음). 150k, 5k 격자.
+source /usr/local/etc/profile.d/conda.sh && conda activate dsrl && source /content/env.sh && cd /content/dsrl
+PROJ=/content/drive/MyDrive/dsrl_project
+CFG="--config-path=cfg/robomimic --config-name=dsrl_can.yaml"
+COMMON="log_dir=$PROJ/logs train.total_env_steps=150000 offline_mix.mode=none load_offline_data=False"
+launch () { EXP=$1; shift; nohup python train_dsrl.py $CFG exp_id=$EXP "$@" $COMMON > $PROJ/logs/$EXP.out 2>&1 & echo "started $EXP (pid $!)"; }
+for S in 1 2 3; do
+  launch can_cql_s$S   seed=$S variant=cql   pretrain_path=$PROJ/logs/pretrain/cql_can_s$S.pt
+  launch can_calql_s$S seed=$S variant=calql pretrain_path=$PROJ/logs/pretrain/calql_can_s$S.pt
+done
+```
+확인: `.out`에 `[pretrain] cql: loaded critic, critic_target, critic_noise from ...`(actor 없음), `[eval] env_steps=0`. 분석: `plot_results.py --axes "critic=baseline,iql,cql,calql,warmupc"`. 비교 기준(online AUC 0~76k): baseline 0.41, iql 0.49, warmupc 0.51. **권장 확장**: 같은 .pt로 `train.ent_coef=auto_0.3 train.target_ent=12`(tent12i)를 붙인 `can_calql_t12i_s{1,2,3}`도 띄워 "보정이 살아남는 온도"에서의 효과를 본다(§20.4 soft Q 주의).
 
 ### 20.5 기타
 - Colab: G4(48 vCPU/176GB)는 Pro+에서만 보임. 이 워크로드는 RAM(run당 17GB)·CPU 바운드라 A100(83GB, 12 vCPU)은 유닛당 처리량이 절반 이하 → G4 배치를 돌리는 달에는 Pro+, 아니면 GCE.
