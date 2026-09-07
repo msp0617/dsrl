@@ -121,10 +121,21 @@ train:
 # warmup distills steps/utd*noise_critic_grad_steps times as a side effect of
 # DSRL's own update, so distill_steps is set to match it (50000/20*10).
 pretrain:
-  method: iql # iql | warmup
+  method: iql # iql | warmup | cql | calql
   steps: 50000
   distill_steps: 25000
   actor_steps: 0 # iql only; >0 also moves pi_W toward argmax Q_W before going online
+  # cql / calql: Q_A target r + gamma Q_A_target(s', pi_dp(s', w')), w' ~ N(0, I)
+  # (the diffusion policy under its prior noise, no actor), plus CQL's penalty
+  # cql_alpha * (E_w Q_A(s, pi_dp(s, w)) - Q_A(s, a_data)) over cql_n_samples
+  # noises per state; cql_noise_clip > 0 clips w to +-clip (the online noise
+  # space is +-action_magnitude), 0 keeps N(0, I) as update_noise_critic does.
+  # calql floors the sampled Q at the demonstration's return-to-go, the
+  # 'returns' column make_offline_chunks.py --gamma (= train.discount) writes.
+  # Everything else is identical between cql and calql.
+  cql_alpha: 5.0
+  cql_n_samples: 4
+  cql_noise_clip: 0
   expectile: 0.7
   batch_size: 256
   log_every: 500

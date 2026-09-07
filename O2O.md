@@ -98,8 +98,10 @@ Re-running the same command after a session dies picks up where it stopped.
 | `baseline` | random (upstream DSRL-NA) | random |
 | `warmup` | DSRL's own update run on the offline data for `pretrain.steps` | trained alongside, loaded (entropy coefficient only with `pretrain.load_ent_coef`) |
 | `iql` | IQL on the offline data, then distilled into Q_W | random (unless `pretrain.actor_steps > 0`) |
+| `cql` | TD toward `r + γ Q̄_A(s', π_dp(s', w'))`, `w' ~ N(0, I)`, plus CQL's penalty `cql_alpha · (E_w Q_A(s, π_dp(s, w)) − Q_A(s, a_data))`; distilled into Q_W | random |
+| `calql` | `cql` with Cal-QL's floor: the sampled Q in the penalty is `max(Q_A, G)`, `G` the demonstration's return-to-go (`returns` in the chunk file, built with `--gamma` = `train.discount`) | random |
 
-Both pretrained variants are produced by `offline_pretrain.py`, which needs no
+All pretrained variants are produced by `offline_pretrain.py`, which needs no
 simulator: the agent is built on `SpacesOnlyEnv`, which carries the task's
 spaces and nothing else, and the diffusion policy only needs torch. It runs on
 any GPU and its output is reused by every seed of the online run.
@@ -229,8 +231,22 @@ python scripts/make_offline_chunks.py \
 ```
 
 The output also carries a per-transition operator-quality label (worse / okay /
-better, from the hdf5 masks) for a later data-quality split; the buffer loader
-ignores extra keys.
+better, from the hdf5 masks) for a later data-quality split, and `returns`, the
+demonstration's discounted return-to-go from each chunk's start state
+(`--gamma`, the run's `train.discount`, applied per chunk along the chain
+`t, t + act_steps, ...`; the steps left at the end of a demonstration count as
+a last partial chunk). `calql` needs it and refuses a file without it or with
+another gamma (`returns_gamma`); the buffer loaders ignore extra keys.
+
+`cql` and `calql` share everything but the floor: the same target (the
+diffusion policy under its prior noise, so no actor is involved), the same
+`cql_alpha`, the same `cql_n_samples` noises per state fed through `π_dp` (the
+critic takes actions, never noise). `pretrain.cql_noise_clip` > 0 clips the
+prior to the online noise box `±action_magnitude`; 0 keeps `N(0, I)` as the
+distillation does. The pretraining log reports `q_mean` (data actions),
+`q_ood_mean` (sampled actions), `penalty` and `floored_frac`, the share of
+sampled values the floor replaced, which is the number that separates a
+working Cal-QL from a scale collapse.
 
 ## Checks
 

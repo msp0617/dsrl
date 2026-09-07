@@ -149,7 +149,16 @@ def report_rewards(data):
         print("operator quality %s (steps)" % counts)
 
 
-def build_chunks(data, act_steps, stride, reward_offset, terminal_at_traj_end):
+def build_chunks(data, act_steps, stride, reward_offset, terminal_at_traj_end, gamma=0.99):
+    """Regroup step rows into the chunk transitions the replay buffer stores.
+
+    `returns` is the demonstration's discounted return-to-go from each chunk's
+    start state in the chunk MDP: chunk rewards (act_steps step rewards minus
+    the offset) discounted by `gamma` per chunk (the run's train.discount, the
+    discount SB3 applies per timestep = per chunk) along the chain t, t + act_steps, ...;
+    the few steps left at the end of a demonstration count as a last, partial
+    chunk. Cal-QL uses it as the floor of the conservative penalty.
+    """
     states = np.asarray(data["states"], dtype=np.float32)
     actions = np.asarray(data["actions"], dtype=np.float32)
     rewards = np.asarray(data["rewards"], dtype=np.float32)
@@ -162,7 +171,7 @@ def build_chunks(data, act_steps, stride, reward_offset, terminal_at_traj_end):
             "traj_lengths sum to %d but there are %d rows" % (total, states.shape[0])
         )
 
-    obs_out, next_obs_out, act_out, rew_out, term_out, qual_out = [], [], [], [], [], []
+    obs_out, next_obs_out, act_out, rew_out, term_out, qual_out, ret_out = [], [], [], [], [], [], []
     start = 0
     skipped = 0
     for length in traj_lengths:
@@ -176,6 +185,11 @@ def build_chunks(data, act_steps, stride, reward_offset, terminal_at_traj_end):
         if length < act_steps + 1:
             skipped += 1
             continue
+
+        shifted = r.astype(np.float64) - reward_offset
+        rtg = np.zeros(length + act_steps, dtype=np.float64)
+        for t in range(length - 1, -1, -1):
+            rtg[t] = shifted[t:t + act_steps].sum() + gamma * rtg[t + act_steps]
 
         for t in range(0, length - act_steps + 1, stride):
             next_index = t + act_steps
@@ -193,6 +207,7 @@ def build_chunks(data, act_steps, stride, reward_offset, terminal_at_traj_end):
             rew_out.append(r[t:t + act_steps].sum() - act_steps * reward_offset)
             term_out.append(terminal)
             qual_out.append(q)
+            ret_out.append(rtg[t])
 
     if skipped:
         print("skipped %d demonstrations shorter than %d steps" % (skipped, act_steps + 1))
@@ -204,6 +219,7 @@ def build_chunks(data, act_steps, stride, reward_offset, terminal_at_traj_end):
         "rewards": np.asarray(rew_out, dtype=np.float32),
         "terminals": np.asarray(term_out, dtype=bool),
         "quality": np.asarray(qual_out, dtype=np.int8),
+        "returns": np.asarray(ret_out, dtype=np.float32),
     }
 
 
@@ -227,6 +243,9 @@ def report(out, act_steps, n_envs):
     print("rewarded chunks  %.1f%% (a chunk paying more than -%d)"
           % (100.0 * float((rewards > -act_steps).mean()), act_steps))
     print("terminals        %d" % int(out["terminals"].sum()))
+    if "returns" in out:
+        ret = out["returns"]
+        print("return-to-go     min %.1f  max %.1f  mean %.2f (per-chunk gamma from --gamma)" % (ret.min(), ret.max(), ret.mean()))
     print("obs range        [%.2f, %.2f]" % (out["states"].min(), out["states"].max()))
     print("action range     [%.2f, %.2f]" % (out["actions"].min(), out["actions"].max()))
 
@@ -245,6 +264,8 @@ def main():
                         help="1 keeps a chunk starting at every step, act_steps keeps disjoint chunks")
     parser.add_argument("--reward_offset", type=int, default=1, help="env.reward_offset from the run config")
     parser.add_argument("--n_envs", type=int, default=4, help="env.n_envs of the run that will load this")
+    parser.add_argument("--gamma", type=float, default=0.99,
+                        help="train.discount of the run: the per-chunk discount of the 'returns' column (Cal-QL's floor)")
     parser.add_argument("--keep_traj_end_nonterminal", action="store_true",
                         help="do not mark the last chunk of a demonstration terminal")
     args = parser.parse_args()
@@ -256,12 +277,14 @@ def main():
     out = build_chunks(
         data,
         act_steps=args.act_steps,
+        gamma=args.gamma,
         stride=args.stride,
         reward_offset=args.reward_offset,
         terminal_at_traj_end=not args.keep_traj_end_nonterminal,
     )
     out = trim_to_multiple(out, args.n_envs)
     report(out, args.act_steps, args.n_envs)
+    out["returns_gamma"] = np.float32(args.gamma)  # after trim_to_multiple: a scalar cannot be sliced
     np.savez_compressed(args.save_path, **out)
     print("wrote", args.save_path)
 

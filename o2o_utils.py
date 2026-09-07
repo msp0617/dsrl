@@ -36,7 +36,7 @@ except ImportError:  # torch-free tests stub stable_baselines3
         "ReplayBufferSamples", "observations actions next_observations dones rewards"
     )
 
-VARIANTS = ("baseline", "warmup", "iql")
+VARIANTS = ("baseline", "warmup", "iql", "cql", "calql")
 MIX_MODES = ("none", "prefill", "fixed", "linear")
 
 STATE_FILE = "run_state.json"
@@ -679,13 +679,23 @@ class OfflineBuffer:
             self.next_observations = th.as_tensor(np.asarray(data["states_next"], dtype=np.float32), device=device)
             self.dones = th.as_tensor(np.asarray(data["terminals"], dtype=np.float32).reshape(-1, 1), device=device)
             self.rewards = th.as_tensor(np.asarray(data["rewards"], dtype=np.float32).reshape(-1, 1), device=device)
+            # return-to-go of the demonstration from each row (Cal-QL's floor),
+            # present when make_offline_chunks.py was run with --gamma
+            self.returns = None
+            self.returns_gamma = None
+            if "returns" in data:
+                self.returns = th.as_tensor(np.asarray(data["returns"], dtype=np.float32).reshape(-1, 1), device=device)
+                self.returns_gamma = float(data["returns_gamma"]) if "returns_gamma" in data else None
         self.device = device
 
-    def sample(self, n):
+    def sample(self, n, with_returns=False):
         idx = th.randint(0, self.n, (int(n),), device=self.device)
-        return ReplayBufferSamples(
+        batch = ReplayBufferSamples(
             self.observations[idx], self.actions[idx], self.next_observations[idx], self.dones[idx], self.rewards[idx]
         )
+        if with_returns:
+            return batch, (self.returns[idx] if self.returns is not None else None)
+        return batch
 
 
 class OfflineRatioCallback(BaseCallback):

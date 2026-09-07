@@ -50,6 +50,22 @@ def test_overlapping_chunks():
     assert out["terminals"][9]
 
 
+def test_returns_follow_the_chunk_chain():
+    data = fake_dataset()
+    out = build_chunks(data, act_steps=4, stride=1, reward_offset=1, terminal_at_traj_end=True, gamma=0.9)
+    assert out["returns"].shape[0] == out["states"].shape[0]
+    # first demo, t=0: chunks 0..3 (-4) and 4..7 (-4), then steps 8, 9 pay 1 each (0)
+    assert abs(out["returns"][0] - (-4 - 0.9 * 4)) < 1e-5
+    # t=4: chunk 4..7 (-4), then the partial chunk 8..9 (0)
+    assert abs(out["returns"][4] - (-4.0)) < 1e-5
+    # t=6: the last chunk 6..9 pays -1, -1, 0, 0 and nothing follows
+    assert abs(out["returns"][6] - (-2.0)) < 1e-5
+    # second demo, t=1 (row 8): steps 11..14 pay -1, -1, -1, 0, then step 15 alone pays 0
+    assert abs(out["returns"][8] - (-3.0)) < 1e-5
+    disjoint = build_chunks(data, act_steps=4, stride=4, reward_offset=1, terminal_at_traj_end=True, gamma=0.9)
+    assert np.allclose(disjoint["returns"], out["returns"][[0, 4, 7]]), "the stride does not change a chunk's return"
+
+
 def test_disjoint_chunks():
     data = fake_dataset()
     out = build_chunks(data, act_steps=4, stride=4, reward_offset=1, terminal_at_traj_end=True)

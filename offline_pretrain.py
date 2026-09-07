@@ -1,6 +1,6 @@
 """Pre-train DSRL's critics on the offline demonstrations, without a simulator.
 
-Two methods, one script, so an online run differs from the baseline only in
+Four methods, one script, so an online run differs from the baseline only in
 where its initial critic weights come from:
 
   warmup  runs DSRL's own update (Algorithm 1) on the offline data for k steps.
@@ -13,13 +13,28 @@ where its initial critic weights come from:
           outside the data. Q_A is then distilled into Q_W exactly as the
           online loop does it (Algorithm 1, line 5).
 
+  cql     conservative Q-learning. The Q_A target is
+          r + gamma * Q_A_target(s', pi_dp(s', w')), w' ~ N(0, I): the value of
+          the diffusion policy under its prior noise, so again no actor. On top
+          of the TD loss, cql_alpha * (E_w Q_A(s, pi_dp(s, w)) - Q_A(s, a_data))
+          pushes down the actions pi_dp can produce but the data does not hold,
+          and pushes up the ones it does. Distilled into Q_W like iql.
+
+  calql   the same with Cal-QL's floor: in the penalty, Q_A of a sampled action
+          is replaced by max(Q_A, G), G the demonstration's return-to-go from s
+          (the 'returns' column make_offline_chunks.py --gamma writes), so the
+          penalty cannot drive Q below what the data actually earned. Identical
+          to cql in target, weight and sampling; the floor is the only change.
+
 Usage, same Hydra config and overrides as train_dsrl.py:
 
   python offline_pretrain.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \\
       pretrain.method=iql pretrain.steps=50000
+  python offline_pretrain.py --config-path=cfg/robomimic --config-name=dsrl_can.yaml \\
+      pretrain.method=calql pretrain.cql_alpha=5.0
 
 Writes a .pt holding the state dicts plus a meta block. An online run picks it
-up with `variant=iql pretrain_path=<file>` (or variant=warmup).
+up with `variant=iql pretrain_path=<file>` (or variant=warmup, cql, calql).
 
 Nothing here touches robosuite or mujoco: the agent is built on
 SpacesOnlyEnv, which carries the task's spaces and nothing else, and the
@@ -47,7 +62,7 @@ from stable_baselines3.common.torch_layers import create_mlp
 from stable_baselines3.common.utils import polyak_update
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from o2o_utils import SpacesOnlyEnv, build_agent, network_fingerprint
+from o2o_utils import OfflineBuffer, SpacesOnlyEnv, build_agent, network_fingerprint
 from utils import load_base_policy, load_offline_data
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
@@ -199,6 +214,114 @@ def run_warmup(model, cfg, pre, log):
             })
 
 
+# ------------------------------------------------------------ CQL / Cal-QL
+
+def prior_noise(n, model, clip=0.0):
+    """w ~ N(0, I) in the shape pi_dp takes: the noise it was trained with and
+    the noise update_noise_critic distils over. Clipped to +-clip when clip > 0
+    (the online noise space is +-train.action_magnitude)."""
+    noise = th.randn(n, model.diffusion_act_chunk, model.diffusion_act_dim, device=model.device)
+    if clip > 0:
+        noise = noise.clamp(-clip, clip)
+    return noise
+
+
+def diffusion_actions(model, obs, noise):
+    """a = pi_dp(s, w), flattened to the chunk the critics take (as in o2o_utils' train)."""
+    actions = model.diffusion_policy(obs, noise, return_numpy=False)
+    return actions.reshape(obs.shape[0], model.diffusion_act_chunk * model.diffusion_act_dim)
+
+
+def conservative_penalty(q_data, q_ood, alpha, returns=None):
+    """CQL's regulariser on one critic head; Cal-QL's floor when returns is given.
+
+    q_data (B, 1): Q of the action in the data. q_ood (B, n): Q of n actions
+    pi_dp produces from prior noise, which the data does not contain. Pushing
+    the first up and the second down is CQL with rho = pi_dp o N(0, I).
+    Cal-QL replaces q_ood by max(q_ood, G), G (B, 1) the demonstration's
+    return-to-go from s: the push stops once an unseen action is valued below
+    what the data actually earned, so the scale of Q survives.
+    Returns the penalty and the fraction of q_ood entries the floor replaced.
+    """
+    if returns is not None:
+        floored = (q_ood < returns).float().mean()
+        q_ood = th.maximum(q_ood, returns.expand_as(q_ood))
+    else:
+        floored = th.zeros((), device=q_ood.device)
+    penalty = alpha * (q_ood.mean(dim=1, keepdim=True) - q_data).mean()
+    return penalty, floored
+
+
+def require_returns(buf, gamma, path):
+    """Cal-QL needs the return-to-go column, discounted with the run's gamma."""
+    if buf.returns is None:
+        raise ValueError(
+            "%s has no 'returns'; rebuild it with scripts/make_offline_chunks.py --gamma %g" % (path, gamma)
+        )
+    if buf.returns_gamma is None or abs(float(buf.returns_gamma) - gamma) > 1e-6:
+        raise ValueError(
+            "'returns' in %s were discounted with gamma=%r but train.discount is %g; rebuild with --gamma %g"
+            % (path, buf.returns_gamma, gamma, gamma)
+        )
+
+
+def run_cql(model, cfg, pre, log, buf, calibrate):
+    """Q_A on the data with CQL's penalty; calibrate=True is Cal-QL.
+
+    The target r + gamma Q_A_target(s', pi_dp(s', w')), w' ~ N(0, I), values the
+    diffusion policy under its prior noise, so no actor is involved and the two
+    methods differ from each other in the floor only, and from iql in the
+    target and the penalty.
+    """
+    gamma = float(cfg.train.discount)
+    alpha = float(pre.cql_alpha)
+    n_samples = int(pre.cql_n_samples)
+    clip = float(pre.cql_noise_clip)
+    batch_size = int(pre.batch_size)
+    combine = str(cfg.train.critic_backup_combine_type)
+    critic, critic_target = model.critic, model.critic_target
+    critic.set_training_mode(True)
+    phase = "calql" if calibrate else "cql"
+
+    for step in range(1, int(pre.steps) + 1):
+        batch, returns = buf.sample(batch_size, with_returns=True)
+        obs, actions, next_obs = batch.observations, batch.actions, batch.next_observations
+        rewards, dones = batch.rewards, batch.dones
+        with th.no_grad():
+            next_actions = diffusion_actions(model, next_obs, prior_noise(batch_size, model, clip))
+            next_q = combine_q(critic_target(next_obs, next_actions), combine)
+            target = rewards + gamma * (1.0 - dones) * next_q
+            # actions the online actor could play but the data does not contain
+            obs_rep = obs.repeat_interleave(n_samples, dim=0)
+            ood_actions = diffusion_actions(model, obs_rep, prior_noise(batch_size * n_samples, model, clip))
+
+        q_values = critic(obs, actions)
+        q_ood_heads = critic(obs_rep, ood_actions)
+        td_loss = 0.5 * sum(F.mse_loss(q, target) for q in q_values)
+        penalty, floored = 0.0, 0.0
+        for q_d, q_o in zip(q_values, q_ood_heads):
+            p, f = conservative_penalty(
+                q_d, q_o.reshape(batch_size, n_samples), alpha, returns if calibrate else None
+            )
+            penalty = penalty + p
+            floored = floored + f / len(q_values)
+        loss = td_loss + penalty
+        critic.optimizer.zero_grad()
+        loss.backward()
+        critic.optimizer.step()
+        polyak_update(critic.parameters(), critic_target.parameters(), model.tau)
+
+        if step % int(pre.log_every) == 0 or step == int(pre.steps):
+            log(phase, step, {
+                "critic_loss": td_loss.item(),
+                "penalty": float(penalty),
+                "q_mean": th.cat(q_values, dim=1).mean().item(),
+                "q_ood_mean": th.cat(q_ood_heads, dim=1).mean().item(),
+                "floored_frac": float(floored),
+                "return_mean": returns.mean().item() if returns is not None else float("nan"),
+            })
+
+
 # --------------------------------------------------------------------- main
 
 @hydra.main(
@@ -208,8 +331,10 @@ def main(cfg: OmegaConf):
     OmegaConf.resolve(cfg)
     pre = cfg.pretrain
     method = str(pre.method)
-    if method not in ("iql", "warmup"):
-        raise ValueError("pretrain.method must be iql or warmup, got %r" % method)
+    if method not in ("iql", "warmup", "cql", "calql"):
+        raise ValueError("pretrain.method must be iql, warmup, cql or calql, got %r" % method)
+    if method in ("cql", "calql") and int(pre.actor_steps) > 0:
+        raise ValueError("pretrain.actor_steps is iql-only: cql and calql go online with a random actor")
     if cfg.algorithm != "dsrl_na":
         raise NotImplementedError("offline pre-training is written for dsrl_na (it needs Q_A and Q_W)")
 
@@ -244,7 +369,8 @@ def main(cfg: OmegaConf):
         write_header = not os.path.exists(log_path)
         with open(log_path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["wall_time", "phase", "step", "value_loss", "critic_loss",
-                                                    "noise_critic_loss", "actor_loss", "ent_coef", "q_mean", "v_mean"])
+                                                    "noise_critic_loss", "actor_loss", "ent_coef", "q_mean", "v_mean",
+                                                    "penalty", "q_ood_mean", "floored_frac", "return_mean"])
             if write_header:
                 writer.writeheader()
             writer.writerow(row)
@@ -256,14 +382,25 @@ def main(cfg: OmegaConf):
     model.set_logger(configure(None, []))
     load_offline_data(model, data_path, 1)
     print("[data] %d transitions from %s" % (model.replay_buffer.size(), data_path), flush=True)
+    buf = None
+    if method in ("cql", "calql"):
+        # sampled by index so that Cal-QL's return-to-go lines up with the rows
+        buf = OfflineBuffer(data_path, model.device)
+        if method == "calql":
+            require_returns(buf, float(cfg.train.discount), data_path)
 
     started = time.time()
     payload = {"meta": {
         "method": method,
         "steps": int(pre.steps),
-        "distill_steps": int(pre.distill_steps) if method == "iql" else 0,
-        "actor_steps": int(pre.actor_steps) if method == "iql" else int(pre.steps),
+        "distill_steps": int(pre.distill_steps) if method != "warmup" else 0,
+        "actor_steps": int(pre.actor_steps) if method != "warmup" else int(pre.steps),
         "expectile": float(pre.expectile) if method == "iql" else None,
+        "cql_alpha": float(pre.cql_alpha) if method in ("cql", "calql") else None,
+        "cql_n_samples": int(pre.cql_n_samples) if method in ("cql", "calql") else None,
+        "cql_noise_clip": float(pre.cql_noise_clip) if method in ("cql", "calql") else None,
+        "calibrated": method == "calql",
+        "returns_gamma": float(buf.returns_gamma) if method == "calql" else None,
         "batch_size": int(pre.batch_size),
         "offline_data_path": data_path,
         "n_transitions": n_rows,
@@ -277,13 +414,16 @@ def main(cfg: OmegaConf):
         payload["actor"] = model.actor.state_dict()
         if model.log_ent_coef is not None:
             payload["log_ent_coef"] = model.log_ent_coef.detach().cpu()
-    else:
+    elif method == "iql":
         value_net = run_iql(model, cfg, pre, log)
         run_distill(model, pre, log)
         payload["value"] = value_net.state_dict()
         if int(pre.actor_steps) > 0:
             run_actor(model, cfg, pre, log)
             payload["actor"] = model.actor.state_dict()
+    else:
+        run_cql(model, cfg, pre, log, buf, calibrate=(method == "calql"))
+        run_distill(model, pre, log)
 
     payload["critic"] = model.critic.state_dict()
     payload["critic_target"] = model.critic_target.state_dict()
