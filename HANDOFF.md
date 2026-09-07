@@ -837,3 +837,34 @@ cat $PROJ/logs/base_policy_eval.csv
 - **Square 후반 붕괴의 메커니즘(진단 확인)**: 엔트로피를 붙들면 α가 올라가고(tent6 → 1.0~1.8, tent12 → 15~17) critic 타깃의 α·log π' 보너스가 γ=0.999로 누적되어 `qw_mean`이 baseline 300~600 대비 tent6 1,700~2,800, tent12 23,000~24,000으로 폭주. critic 타깃이 보상이 아니라 보너스로 채워져 후반 정책이 무너진다. Can(γ=0.99, α ≤ 0.5)에서는 안 드러남.
 - 다음 설계: actor 엔트로피 목표 + critic 타깃 보너스 제거(`train.critic_entropy_scale=0`, 구현돼 있음) 또는 목표 엔트로피 스케줄. 1순위 실험 `square_tent12 + critic_entropy_scale=0`.
 - 그림 최종본 `Downloads\dsrl_figs_0906\`(figs5). HANDOFF_CHAT.md 17:10판을 18:40 결과로 갱신.
+
+## 20. 9/7(월) — AUC 정의 통일, Square 인과 고리 배치, 동료 연구 비교, CQL/Cal-QL 계획
+
+### 20.1 AUC·시간축 정의 통일 (`plot_results.py` 90975b4)
+- 발견: 표의 "AUC 24~100k"가 **두 정의의 혼합**이었다. 15절(축 A·B)은 `plot_results.py`의 0~100k 적분(step-0 행을 x=0에 둔 채 포함 → 0→29k 직선이 창의 24%), 19절(α·Square)은 scratch `adaptive_check.py`의 첫 평가(29k/37k)~100k(step 0 제외). raw CSV는 초기 평가 `env_steps=0`, 첫 학습 후 평가 29,024(Square 37,024)이고 rollout 끝(24,016/32,016)에는 평가가 없다.
+- 통일안(적용됨): **online step** = 초기 평가 0, 이후 `env_steps − rollout`. early AUC = seed별 online 0~75,984(Can)/0~67,984(Square) 사다리꼴(초기 평가 포함, 마지막 평가가 cutoff에 못 미치면 마지막 값 유지) → 평균±SE. 최저는 평균곡선을 공통 5k 격자(online 5,008·k)에서 읽음. `at_env129k`, `recovery_pi_dp_at` 열 추가. 그림은 `success_<axis>.png` + early 창 `success_<axis>_early.png`(마커·선종류 구분, 선을 음영 위에, mix 축에서 `iql_linear (n=1)` 제거·`iql_prefill` 추가).
+- 값 변화(구→신): warmup 0.44→0.48, iql_prefill 0.56→0.60, warmupc 0.48→0.51, rs_025 0.29→0.32, hardq 0.27→0.30, mix_linear 0.62→0.64, fixalpha 0.01 0.18→0.15, 나머지 ±0.01. 순위 불변. "두 축 안 쌓임"·"linear < prefill"은 차이 0.04~0.08(SE 0.01~0.02)이므로 "prefill보다 낫지 않다"까지만. HANDOFF_CHAT §2, STATUS 표 갱신 완료. 로컬 그림 `~/Downloads/dsrl_figs_0907/`.
+- 캡션: "Normalized early-online AUC over online steps 0–76k (Can) / 0–68k (Square): the initial evaluation is placed at online step 0 and each later evaluation at env steps minus the 24,016-step (32,016) initial rollout. Mean ± SE over seeds."
+
+### 20.2 Square 인과 마지막 고리 배치 (Colab G4, 14:30 KST 시작, 150k, 7 run)
+- `square_tent12_hq_s{1,2,3}`: `train.target_ent=12 train.critic_entropy_scale=0.0` (actor는 엔트로피 12 유지, critic 타깃의 α·log π′ 보너스 제거). `square_tent12_s{4,5}`, `square_baseline_s{4,5}`: 비교군·기준군 n=5. 자동 반납 keepalive. 완료 예상 19:30~20:00 KST. 결과는 Drive `$PROJ/logs/`.
+- 판정(사전 고정): 42k 평균 ≥ 0.33 **그리고** 127k ≥ baseline(0.47, n=5로 갱신) → 인과 닫힘, 포스터 6번 패널에 처방 곡선 추가. dip 없음 + 127k < 0.47 → Q_W 폭주는 상관, 6번 패널을 "관찰"로 낮춤. 42k dip 복귀 → hard backup이 초반을 해침(Can hardq 방향), 처방 기각. 진단: `qw_mean`이 300~600에 머무는지(tent12 23,000), 엔트로피 12 유지되는지.
+- 분석: `.venv/bin/python scripts/plot_results.py --logs ~/Downloads/logs --out <figs> --axes "square=square_baseline,square_tent12,square_tent12_hq,square_iql,square_mix_prefill"`.
+- 이 실험의 위치: 헤드라인(dip = 엔트로피 붕괴, 두 과제 용량-반응)은 이 결과와 무관. 6번 패널만 바뀐다. 3 seed·Square 127k 편차(0.09~0.60)라 어느 쪽이든 "시사적"까지.
+
+### 20.3 동료 연구(Cal-QL 사전학습, 자체 2D 과제)와의 비교 요점
+- 동료: Q_A를 오프라인에서 ② plain TD / ③ CQL / ④ Cal-QL(max(Q, G_t) 바닥)로 사전학습, 온라인 코드 불변, 지표 T50/T80(시행 횟수), 3회 반복(매번 데모·π_dp 새로), 8차원 노이즈, G∈[0,1]. 결과: Cal-QL T50 2.7배 단축, plain 무효, CQL 3배 느림(Q −9 눈금 붕괴). 메커니즘 주장: Q_A 과대평가(+0.71) → Q_W → π_W.
+- 우리와의 관계: (1) 동료의 질문은 우리의 **출발 가설**(critic 초기화)과 같고, 우리는 Can에서 critic 사전학습(iql·warmupc)이 dip을 얕게만 하고 시점·최종을 못 바꾼다고 결론 → 원인을 auto-α 엔트로피 붕괴로 옮김. (2) 동료 글에는 SAC 온도·목표 엔트로피·엔트로피가 변수로 없고(글의 α=1.0은 CQL 계수), dip(29% 아래 하락) 여부도 보고 안 됨(T50은 단조 상승과 dip을 구분 못 함). (3) 동료 ①(논문 그대로, 데모를 리플레이에)은 우리 `baseline`이 아니라 `mix_prefill`에 대응. (4) "plain 사전학습 무효"는 두 연구 일치. (5) 과대평가 주장은 우리 진단(`q_start − mc_return`은 α가 작아진 뒤에만 유효; 초기 Q_W는 엔트로피 보너스 오프셋 +55~+175로 덮임; 보상 ×0.25~×2·hard backup이 첫 하락 시점을 못 움직임)과 직접 맞대기 어려움 — 동료의 "critic 오차"가 soft Q를 어떻게 다뤘는지 불명. 워크플로 교차검증은 세션 한도로 미완(초안만).
+
+### 20.4 축 A 확장: CQL / Cal-QL 사전학습 (GPT가 구현 중, 저장소 제약 체크리스트)
+- 넣을 자리: `offline_pretrain.py` `run_iql` 옆에 `run_cql`(Cal-QL은 플래그) → 기존 `run_distill`로 Q_W 증류 → 같은 payload(critic, critic_target, critic_noise). `main`의 `method in ("iql","warmup")`, `o2o_utils.VARIANTS`, `check_pretrain_meta`(method == variant)에 `cql`, `calql` 등록. `train_dsrl.py`는 그대로.
+- **"안 해 본 행동"은 반드시 π_dp를 통과**: w ~ N(0,I)(및 π_W) → `model.diffusion_policy(obs, w.reshape(-1, act_steps, action_dim), return_numpy=False)` → Q_A(s, a). `o2o_utils.py:176-181` 방식 그대로. w를 Q_A에 직접 넣으면 조용히 틀린다.
+- **G_t가 데이터에 없다**: `can_train_offline.npz` 키는 states/states_next/actions/rewards/terminals/quality뿐. `make_offline_chunks.py` `build_chunks`의 궤적 루프에서 청크 단위 return-to-go `returns`를 추가로 저장해야 한다(stride 1, 청크 보상 = 4스텝 합 − 4·reward_offset ∈ [−4, 0], 할인은 **청크당 γ=0.99**(SB3 gamma, online과 동일; 스텝당 0.99⁴가 아님)). 데모는 전부 성공이라 G ∈ 약 [−200, 0]. Drive의 npz를 다시 만들어 올려야 함(`--check_against` 검증 포함). 동료의 G∈[0,1]·α=1.0 값은 그대로 쓰면 안 된다.
+- **soft Q 문제(핵심 주의)**: 온라인 critic 타깃은 `r + γ(Q̄ − α·log π′)`이고 α는 1.0에서 시작한다. Cal-QL이 hard return에 맞춘 눈금은 25k 안에 엔트로피 보너스(+55~+175)에 덮인다(15절 iql: Q_W −145 → +70). 따라서 조건은 **{cql, calql} × {auto-α(논문), tent12i 또는 고정 0.3}** 으로 짜야 "보정이 살아남는 온도"에서의 효과를 볼 수 있다. auto-α 단독에서 효과가 없으면 그것이 곧 결과다(Can에서 동료 주장의 경계).
+- CQL 계수 α_cql는 Q 스케일(≈ −100)에 맞춰 스윕 필요(동료 1.0은 Q∈[0,1] 기준). 로그 `q_mean`(데이터 행동)과 π_dp 샘플 행동의 Q 평균을 같이 찍어 눈금 붕괴(동료 ③의 −9)를 감시.
+- 사전학습은 시뮬레이터 없이 GPU만 필요(`SpacesOnlyEnv`), 50k step. 사전학습 .pt 하나를 온라인 seed들이 공유.
+
+### 20.5 기타
+- Colab: G4(48 vCPU/176GB)는 Pro+에서만 보임. 이 워크로드는 RAM(run당 17GB)·CPU 바운드라 A100(83GB, 12 vCPU)은 유닛당 처리량이 절반 이하 → G4 배치를 돌리는 달에는 Pro+, 아니면 GCE.
+- `STATUS_2026-09-07.md`: 팀 공유용 진행상황 보고서(초안, AUC는 갱신됨). 수치 검증 워크플로는 세션 한도로 미완 — 배포 전에 §2 표와 한 번 더 대조할 것.
+- 로컬(macOS) 분석 환경: `.venv`(numpy/pandas/matplotlib), CSV는 `~/Downloads/logs/`(csv_bundle.zip 전개본, 98 run).
