@@ -946,3 +946,8 @@ done
 - `td` mismatch 하나로 세 VM의 동시 종료를 설명할 수 없다. Can/Square의 cql·calql 프로세스는 남아 있어야 하고 t12i/prefill VM은 td와 무관하다. 세 VM이 함께 사라졌다면 compute unit 소진 또는 외부 종료 쪽이 더 일관된다. `write`는 마지막 파일 기록 시각이지 VM 사망 시각의 직접 증거는 아니다.
 - 체크포인트 간격 25k는 **온라인 학습 추가분** 기준이다. 초기 rollout을 포함한 raw `env_steps`에서 첫 체크포인트는 Can 약 49,024, Square 약 57,024다. 그 전 `ckpt none`은 처음부터다. `[mrr]`은 세 파일의 존재를 뜻할 뿐이며, 실제 resume 때 손상 검사가 실패하면 이전 슬롯로 fallback한다. 유효 checkpoint 후보가 있으면 초기 critic이 이미 checkpoint 안에 있으므로 원래 pretrain `.pt`의 존재를 다시 강제하지 않도록 수정했다(처음 시작할 때만 필요).
 - 재개 우선순위(hq 완료 반영): **Can 9 → calql_t12i 3 → calql_prefill 3 → Square 9**. 열린 Colab 사본의 셀 본문은 셀 안 `git pull`로 갱신되지 않으므로 최신 GitHub 노트북을 새로 열거나 온라인 셀이 실제로 `variant=$M`인지 확인한다.
+
+### 20.8 혼동 방지용 신규 VM 실행판
+- 기존 다목적 노트북 대신 `colab/vm1_new.ipynb`, `colab/vm2_new.ipynb`, `colab/vm3_new.ipynb`를 사용한다. 각 노트북은 0→9 순서의 실행 전용판이며 1번의 condacolab 재시작 뒤 2번부터 계속한다.
+- VM1은 Can td/cql/calql 9개, VM2는 Can calql_t12i/prefill 6개, VM3은 Square td/cql/calql 9개만 띄운다. 모든 td launch는 `variant=td`이고 중복 프로세스는 다시 띄우지 않으며, 8번 자동 점검 뒤 9번 keepalive가 마지막 프로세스 종료 시 VM을 반납한다.
+- VM3 6번은 Square 9개 메타와 4,096-state 오프라인 진단을 전수 출력한다. 진단의 REJECT는 기록하되 온라인 시작을 막지는 않고, 검사 명령 자체가 실패한 경우에만 셀이 실패한다.
