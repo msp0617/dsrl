@@ -101,6 +101,10 @@ def add_textbox(slide, x, y, w, h, paragraphs, **kw):
     return box
 
 
+METHOD_COLORS = {"DSRL baseline": RGBColor(0x6E, 0x6E, 0x78), "IQL": RGBColor(0x6D, 0x3F, 0xD6),
+                 "TD": RGBColor(0x2F, 0x5F, 0x9E), "CQL": RGBColor(0xC0, 0x39, 0x2B), "Cal-QL": RGBColor(0x1B, 0x5E, 0x20)}
+
+
 def style_cell(cell, text, size, header=False, align=PP_ALIGN.CENTER):
     cell.margin_left = cell.margin_right = Emu(79200)
     cell.margin_top = cell.margin_bottom = Emu(18000)
@@ -109,7 +113,12 @@ def style_cell(cell, text, size, header=False, align=PP_ALIGN.CENTER):
     tf.word_wrap = True
     para = tf.paragraphs[0]
     para.alignment = align
-    fill_paragraph(para, text, size, color=WHITE if header else INK, bold_all=header)
+    color = WHITE if header else INK
+    if not header and align == PP_ALIGN.LEFT:
+        for key, rgb in METHOD_COLORS.items():
+            if text.startswith(key):
+                color = rgb
+    fill_paragraph(para, text, size, color=color, bold_all=header)
     if header:
         cell.fill.solid()
         cell.fill.fore_color.rgb = TEAL
@@ -209,7 +218,7 @@ def main():
     y += 2.05
 
     place(one("TextBox 138"), L_X, y, COL_W, 0.8); y += 0.85
-    set_text(one("TextBox 138"), ["Approach"], size=46, color=NAVY, bold_all=True, after=0, line=1.0)
+    set_text(one("TextBox 138"), ["Background & Methods"], size=46, color=NAVY, bold_all=True, after=0, line=1.0)
     place(one("TextBox 139"), L_X, y, COL_W, 4.2)
     set_text(one("TextBox 139"), [
         "**DSRL (CoRL 2025)** fine-tunes a frozen diffusion policy by learning its input noise: with DDIM at η = 0, "
@@ -227,14 +236,15 @@ def main():
     remove(one("TextBox 143"))
 
     diagram = one("Picture 140")
-    dw = 8.6
+    dw = 8.0
     dh = dw / (10.9 / 4.5)
     place(diagram, L_X + (COL_W - dw) / 2, y, dw, dh); y += dh + 0.05
-    place(one("TextBox 141"), L_X, y, COL_W, 0.4)
+    place(one("TextBox 141"), L_X, y, COL_W, 0.7)
     set_text(one("TextBox 141"), [
-        "Q^{A} is the only network pretrained offline; it is the learning target of Q^{W}.",
+        "We fit Q^{A} to offline data, then distill it into Q^{W} before online learning. The latent actor remains "
+        "frozen during these stages.",
     ], size=18, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
-    y += 0.45
+    y += 0.75
 
     arms = one("Table 144")
     place(arms, L_X, y)
@@ -242,15 +252,15 @@ def main():
     insert_row_after(arms, 2, ["iql", "in-sample expectile V (robomimic)", "does avoiding OOD queries help?"])
     y += 0.56 * 6 + 0.05
 
-    place(one("TextBox 145"), L_X, y, COL_W, 1.9)
+    place(one("TextBox 145"), L_X, y, COL_W, 2.15)
     set_text(one("TextBox 145"), [
         "GapReach2D runs four arms (no IQL); robomimic runs all five. Robomimic CQL/Cal-QL are critic-only "
-        "adaptations (IQL in-sample V target, data action anchored in the log-sum-exp). Controls: the latent actor "
-        "and Q^{W} stay frozen during pretraining; penalty candidates are physical action chunks π_{dp}(s, w), "
-        "never latent noise.",
+        "adaptations (IQL in-sample V target, data action anchored in the log-sum-exp). Controls: while Q^{A} is "
+        "pretrained, Q^{W} and the latent actor are frozen; Q^{W} is then trained only in the distillation stage. "
+        "Penalty candidates are physical action chunks π_{dp}(s, w), never latent noise.",
     ], size=19, color=MUTED, after=0)
     remove(one("TextBox 146"))
-    y += 1.95
+    y += 2.2
 
     add_textbox(slide, L_X, y, COL_W, 0.45, ["**Critic diagnostics**"], size=24, color=NAVY, after=0, line=1.0)
     y += 0.5
@@ -262,8 +272,8 @@ def main():
     place(one("TextBox 154"), L_X, y, COL_W, 0.7)
     set_text(one("TextBox 154"), [
         "GapReach2D (returns in [0, 1]): Cal-QL shows the smallest online over-estimation spike; CQL's scale collapsed.",
-    ], size=16, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
-    y += 0.75
+    ], size=17, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
+    y += 0.8
 
     add_table(slide, L_X, y, COL_W, [
         ["Robomimic, before online", "Can  E_{w}Q^{A} − G", "Square  E_{w}Q^{A} − G"],
@@ -272,36 +282,38 @@ def main():
         ["Cal-QL-style", "−58", "+23"],
     ], col_w=[4.3, 3.3, 3.3], row_h=[0.55, 0.5, 0.5, 0.5], size=19)
     y += 2.1
-    add_textbox(slide, L_X, y, COL_W, 0.75, [
+    add_textbox(slide, L_X, y, COL_W, 1.1, [
         "Q on prior-noise actions π_{dp}(s, w) minus the demonstration return G (≈ −100 Can, −150 Square): a scale "
         "comparison on a different return scale, not an estimation error and not comparable to the table above.",
-    ], size=15, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.05)
-    y += 0.8
+    ], size=17, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.05)
+    y += 1.0
 
-    add_textbox(slide, L_X, y, COL_W, 2.1, [
+    add_textbox(slide, L_X, y, COL_W, 2.4, [
         "**Metrics & protocol.** Online step = env step − initial rollout (24,016 Can / 32,016 Square). "
         "min = lowest point of the seed-mean success curve on the common 5k online-step grid within the early "
         "window; early AUC = normalised area over online steps 0–76k (Can) / 0–68k (Square), initial evaluation at "
         "step 0; late = evaluation at env step 129,152 (Can) / 127,136 (Square). 100 episodes per early "
         "evaluation, 200 late; mean ± SE over seeds.",
-    ], size=17, line=1.1, after=0)
-    left_bottom = y + 2.1
+    ], size=19, line=1.12, after=0)
+    left_bottom = y + 2.4
 
     # ============================ right column ===========================
     y = TOP
     place(one("TextBox 147"), R_X, y, COL_W, 0.8); y += 0.85          # "Experiments"
-    place(one("TextBox 148"), R_X, y, COL_W, 2.5)
+    place(one("TextBox 148"), R_X, y, COL_W, 2.1)
     set_text(one("TextBox 148"), [
         "**GapReach2D.** Sparse-reward planar reaching with DSRL's structure (chunked actions, frozen DDIM policy, "
-        "two-critic chain): a wall with a wide safe gap and a narrow risky gap, re-randomised per episode; contact "
-        "fails, the goal gives +1. Demonstrations succeed 60%, the cloned policy 22.5%. 3 seeds per arm, 20,000 "
-        "online steps; T_{x} = online steps to first reach x% success.",
+        "two-critic chain): a wall with a wide safe gap and a narrow risky gap; contact fails, the goal gives +1. "
+        "Demonstrations succeed 60%, the cloned policy 22.5%. 3 seeds per arm, 20,000 online steps; "
+        "T_{x} = online steps to first reach x% success.",
     ])
-    y += 2.55
-    curve = one("Picture 149")
-    ch = 3.3
-    cw = ch * (7.5 / 5.5)
-    place(curve, R_X + (COL_W - cw) / 2, y, cw, ch); y += ch + 0.05
+    y += 2.15
+    remove(one("Picture 149"))
+    cw = 5.8
+    ch = cw / (2136 / 1548)
+    slide.shapes.add_picture(f"{args.figs}/gapreach_curve.png", Inches(R_X + (COL_W - cw) / 2), Inches(y),
+                             width=Inches(cw), height=Inches(ch))
+    y += ch + 0.05
     place(one("TextBox 150"), R_X, y, COL_W, 0.4); y += 0.45
     gap = one("Table 151")
     place(gap, R_X, y)
@@ -312,29 +324,29 @@ def main():
     for name in ("Picture 155", "TextBox 156"):
         remove(one(name))
 
-    add_textbox(slide, R_X, y, COL_W, 2.0, [
+    add_textbox(slide, R_X, y, COL_W, 1.9, [
         "**Robomimic Can and Square.** All five conditions, 3–5 seeds, 150k env steps, no demonstration replay so "
-        "that only the critic differs. Dashed reference: the frozen diffusion policy with N(0, I) noise (Can 0.405, "
-        "Square 0.494); DSRL baseline = the same policy fine-tuned online from a random critic. Curves: early "
-        "window, seed mean ± SE.",
+        "that only the critic differs. Dashed line: the frozen diffusion policy with N(0, I) noise (Can 0.405, "
+        "Square 0.494); solid grey: DSRL baseline, the same policy fine-tuned online from a random critic. "
+        "Curves: early window, seed mean ± SE.",
     ])
-    y += 2.05
+    y += 1.95
 
-    ph = 2.5
-    pw = ph * 1.6
-    gap_x = 0.5
-    x0 = R_X + (COL_W - (2 * pw + gap_x)) / 2
-    add_textbox(slide, x0, y, pw, 0.35, ["**Can: Pick and place**"], size=19, align=PP_ALIGN.CENTER, after=0, line=1.0)
-    add_textbox(slide, x0 + pw + gap_x, y, pw, 0.35, ["**Square: Nut assembly**"], size=19, align=PP_ALIGN.CENTER, after=0, line=1.0)
+    ph = 2.2
+    pw_can, pw_sq = ph * (870 / 370), ph * (600 / 360)
+    gap_x = 0.4
+    x0 = R_X + (COL_W - (pw_can + pw_sq + gap_x)) / 2
+    add_textbox(slide, x0, y, pw_can, 0.35, ["**Can: Pick and place**"], size=19, align=PP_ALIGN.CENTER, after=0, line=1.0)
+    add_textbox(slide, x0 + pw_can + gap_x, y, pw_sq, 0.35, ["**Square: Nut assembly**"], size=19, align=PP_ALIGN.CENTER, after=0, line=1.0)
     y += 0.37
-    slide.shapes.add_picture(f"{args.figs}/can_crop.png", Inches(x0), Inches(y), width=Inches(pw), height=Inches(ph))
-    slide.shapes.add_picture(f"{args.figs}/square_crop.png", Inches(x0 + pw + gap_x), Inches(y), width=Inches(pw), height=Inches(ph))
+    slide.shapes.add_picture(f"{args.figs}/can_crop.png", Inches(x0), Inches(y), width=Inches(pw_can), height=Inches(ph))
+    slide.shapes.add_picture(f"{args.figs}/square_crop.png", Inches(x0 + pw_can + gap_x), Inches(y), width=Inches(pw_sq), height=Inches(ph))
     y += ph + 0.05
     add_textbox(slide, R_X, y, COL_W, 0.35, ["Example rollouts of the frozen diffusion policy in simulation."],
                 size=18, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
     y += 0.4
 
-    lw = 9.3
+    lw = 8.2
     lh = lw / (10.9 / 5.6)
     slide.shapes.add_picture(f"{args.figs}/critic_ladder_early.png", Inches(R_X + (COL_W - lw) / 2), Inches(y),
                              width=Inches(lw), height=Inches(lh))
@@ -347,23 +359,24 @@ def main():
         ["TD (n=3)", "0.39", "0.47±0.03", "0.56±0.03", "0.44", "0.49±0.02", "0.42±0.06"],
         ["CQL-style (n=3)", "0.35", "0.48±0.02", "0.58±0.05", "0.37", "0.47±0.01", "0.33±0.08"],
         ["Cal-QL-style (n=3)", "0.34", "0.43±0.02", "0.51±0.05", "0.40", "0.46±0.03", "0.42±0.05"],
-    ], col_w=[2.4, 1.15, 1.6, 1.55, 1.15, 1.6, 1.45], row_h=[0.45, 0.5, 0.46, 0.46, 0.46, 0.46, 0.46],
+    ], col_w=[2.4, 1.15, 1.6, 1.55, 1.15, 1.6, 1.45], row_h=[0.45, 0.5, 0.44, 0.44, 0.44, 0.44, 0.44],
         size=17, header_rows=2, merges=[(0, 1, 0, 3), (0, 4, 0, 6)])
-    y += 0.45 + 0.5 + 0.46 * 5 + 0.25
+    y += 0.45 + 0.5 + 0.44 * 5 + 0.2
 
-    place(one("TextBox 157"), R_X, y, COL_W, 0.65); y += 0.68        # "Discussion"
-    place(one("TextBox 158"), R_X, y, COL_W, 2.75)
+    place(one("TextBox 157"), R_X, y, COL_W, 0.6); y += 0.62        # "Discussion"
+    place(one("TextBox 158"), R_X, y, COL_W, 3.3)
     set_text(one("TextBox 158"), [
         "**GapReach2D.** Cal-QL reaches 50% success in 2.7× fewer online steps; plain CQL is slower than no "
         "pretraining, its Q collapsed to a flat −7.7.",
-        "**Can · Square.** Every pretrained critic raises the seed-mean floor of the early dip (0.24 → 0.34–0.44); "
-        "Cal-QL-style adds no consistent benefit over IQL (seed-matched early AUC −0.08 ± 0.02 on Can, late "
-        "−0.15 ± 0.06 on Square). TD leads early on Square, IQL late. Limits: 3–5 seeds; critic-only adaptations.",
+        "**Can · Square.** Every pretrained critic raises the seed-mean floor of the early dip (Can 0.24 → "
+        "0.34–0.39, Square 0.23 → 0.37–0.44); Cal-QL-style adds no consistent benefit over IQL (seed-matched early "
+        "AUC −0.08 ± 0.02 on Can, late −0.15 ± 0.06 on Square). On Square the seed means favour TD early and IQL "
+        "late; n = 3–5, no significance claimed. Robomimic CQL/Cal-QL are critic-only adaptations.",
         "Auxiliary ablations suggest that online entropy settings and demonstration replay also affect transition "
         "performance. Future work will examine their interaction with critic pretraining and the persistence of "
         "calibration during online learning.",
-    ], size=16.5, after=4, line=1.1)
-    right_bottom = y + 2.75
+    ], size=18, after=3, line=1.08)
+    right_bottom = y + 3.3
 
     # ============================ conclusion bar ==========================
     top = max(left_bottom, right_bottom) + 0.12
