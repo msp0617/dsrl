@@ -12,6 +12,6 @@ material from the GapReach2D study. It also writes `<out>_layout.png`, a
 wireframe of every box, since a PPTX cannot be rendered here.
 
 Figures come from `scripts/plot_results.py` (`success_<axis>_early.png`)
-plus `replay_bars.png` (early-AUC bars of the replay axis, drawn inline in
-the session that produced draft v0; to be moved into a script with the
-final numbers).
+plus `replay_bars.png` from `scripts/replay_bars.py --summary <figs>/summary.csv
+--out <figs>/replay_bars.png` (early-AUC and 129k bars of the replay axis, read
+from the summary.csv that plot_results.py writes).
