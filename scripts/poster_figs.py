@@ -46,7 +46,7 @@ def mean_curve(data, task, group, maximum):
 def draw(ax, data, task, groups, labels, reference, maximum, lw=3.0):
     for group in groups:
         x, mean, se, n = mean_curve(data, task, group, maximum)
-        ax.plot(x, mean, color=COLORS[group], lw=lw, marker=MARKERS.get(group, "o"), ms=6,
+        ax.plot(x, mean, color=COLORS[group], lw=lw, marker=MARKERS.get(group, "o"), ms=7,
                 label=f"{labels[group]} (n={n})")
         ax.fill_between(x, mean - se, mean + se, color=COLORS[group], alpha=.13, linewidth=0)
     ax.axhline(reference, color="#1a1a1a", lw=2.2, linestyle="--", label=f"frozen policy {reference:.3f}")
@@ -71,14 +71,14 @@ def main():
         col = [c for c in refs.columns if "success" in c or "mean" in c][0]
         ref = {r.task: float(getattr(r, col)) for r in refs.itertuples()}
 
-    plt.rcParams.update({"font.size": 18, "axes.titlesize": 21, "axes.labelsize": 18,
-                         "legend.fontsize": 16.5, "xtick.labelsize": 16, "ytick.labelsize": 16,
+    plt.rcParams.update({"font.size": 19, "axes.titlesize": 23, "axes.labelsize": 20,
+                         "legend.fontsize": 18.5, "xtick.labelsize": 18, "ytick.labelsize": 18,
                          "font.family": "DejaVu Sans"})
 
     # 1) critic ladder, early window
     ladder = ["baseline", "iql", "td", "cql", "calql"]
     labels = {"baseline": "DSRL baseline", "iql": "IQL", "td": "TD", "cql": "CQL-style", "calql": "Cal-QL-style"}
-    fig, axes = plt.subplots(1, 2, figsize=(10.9, 5.6))
+    fig, axes = plt.subplots(1, 2, figsize=(10.9, 5.3))
     for ax, task, title in zip(axes, ("can", "square"), ("Can", "Square")):
         draw(ax, data, task, ladder, labels, ref[task], EARLY[task])
         ax.set_title(title, fontweight="bold")
@@ -86,9 +86,9 @@ def main():
     handles, names = axes[0].get_legend_handles_labels()
     names = [n.replace(" (n=5)", "").replace(" (n=3)", "") for n in names[:-1]] + ["frozen diffusion policy (dashed)"]
     fig.legend(handles, names, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 0.0),
-               handlelength=2.2, columnspacing=1.6)
-    fig.tight_layout(rect=(0, 0.16, 1, 1))
-    fig.savefig(args.out / "critic_ladder_early.png", dpi=220, facecolor="white")
+               handlelength=2.2, columnspacing=1.4)
+    fig.tight_layout(rect=(0, 0.17, 1, 1), pad=0.3, w_pad=1.0)
+    fig.savefig(args.out / "critic_ladder_early.png", dpi=300, facecolor="white")
     fig.savefig(args.out / "critic_ladder_early.pdf", facecolor="white")
     plt.close(fig)
 

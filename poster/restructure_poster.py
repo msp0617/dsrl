@@ -348,8 +348,8 @@ def main():
                 size=18, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
     y += 0.4
 
-    lw = 7.5
-    lh = lw / (10.9 / 5.6)
+    lw = 8.2
+    lh = lw / (10.9 / 5.3)
     slide.shapes.add_picture(f"{args.figs}/critic_ladder_early.png", Inches(R_X + (COL_W - lw) / 2), Inches(y),
                              width=Inches(lw), height=Inches(lh))
     y += lh + 0.05
@@ -386,7 +386,7 @@ def main():
     y += 0.45
 
     place(one("TextBox 157"), R_X, y, COL_W, 0.6); y += 0.62        # "Discussion"
-    place(one("TextBox 158"), R_X, y, COL_W, 3.85)
+    place(one("TextBox 158"), R_X, y, COL_W, 3.55)
     set_text(one("TextBox 158"), [
         "**GapReach2D.** Cal-QL reaches 50% success in 2.7× fewer online steps; plain CQL is slower than no "
         "pretraining, its Q collapsed to a flat −7.7.",
@@ -400,7 +400,7 @@ def main():
         "performance. Future work will examine their interaction with critic pretraining and the persistence of "
         "calibration during online learning.",
     ], size=18, after=3, line=1.08)
-    right_bottom = y + 3.85
+    right_bottom = y + 3.55
 
     # ============================ conclusion bar ==========================
     top = max(left_bottom, right_bottom) + 0.35
