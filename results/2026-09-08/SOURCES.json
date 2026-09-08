@@ -1,0 +1,28 @@
+{
+  "source_date": "2026-09-08",
+  "online_logs_folder": "https://drive.google.com/drive/folders/1hBokNrw8iE8YHKMl8Tr21ffGbWtKnfv6",
+  "online_manifest": "../../logs/audit_20260908/source_manifest.json",
+  "offline_manifest": "../../logs/audit_20260908/pretrain/source_manifest.json",
+  "references": [
+    {
+      "title": "base_policy_eval_square.csv",
+      "id": "1qkOvsNkK4eoytt16-HaTVYj2fINZlJrs",
+      "size": "233",
+      "url": "https://drive.google.com/file/d/1qkOvsNkK4eoytt16-HaTVYj2fINZlJrs/view?usp=drivesdk",
+      "modified_time": "2026-09-08T05:22:19.446Z"
+    },
+    {
+      "title": "base_policy_eval.csv",
+      "id": "1fe389l462RnZEqsr7Rc_ILV5OzhvLb96",
+      "size": "215",
+      "url": "https://drive.google.com/file/d/1fe389l462RnZEqsr7Rc_ILV5OzhvLb96/view?usp=drivesdk",
+      "modified_time": "2026-09-04T22:32:20.112Z"
+    }
+  ],
+  "previous_comparison": {
+    "id": "1HhhBzlpbqGwtRgeMx-6d9VG5pZOZdNjN",
+    "path": "../../logs/analysis_source_20260908/comparison.csv"
+  },
+  "inspected_repo_commit": "669de86591a4cc916e82639f8cc6416fb9972c1f",
+  "note": "Read-only Drive fetches. CSV byte sizes checked before newline normalization; hashes in audit.csv describe LF-normalized local copies."
+}

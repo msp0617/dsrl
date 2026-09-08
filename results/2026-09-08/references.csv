@@ -1,0 +1,3 @@
+task,n,episodes,mean,seed_se,pooled_rate,binomial_se,source_file,duplicate_seeds_removed
+can,3,1500,0.4053333333333334,0.01767609811141717,0.4053333333333333,0.012676440673475663,base_policy_eval.csv,0
+square,3,1500,0.49400000000000005,0.007211102550928021,0.494,0.01290901493788998,base_policy_eval_square.csv,0
