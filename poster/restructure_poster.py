@@ -180,36 +180,54 @@ def main():
     for sh in by_name["제목 1"]:
         if sh.text_frame.text.startswith("Improving") or sh.text_frame.text.startswith("Offline RL"):
             set_text(sh, ["Offline RL Methods for Offline-to-Online Fine-Tuning of Diffusion Policies with DSRL"],
-                     size=54, color=NAVY, align=PP_ALIGN.CENTER, line=1.0, after=0, bold_all=True)
+                     size=50, color=NAVY, align=PP_ALIGN.CENTER, line=1.0, after=0, bold_all=True)
+
+    # ---- header block: tighter top margin (allowed by the TA) --------------
+    for sh in by_name["제목 1"]:
+        t = sh.text_frame.text
+        if t.startswith("Offline RL"):
+            place(sh, 0.7, 0.1, 22.0, 2.4)
+        elif t.startswith("[Your Name]"):
+            place(sh, 0.0, 2.7, PAGE_W, 0.55)
+        elif t.startswith("Department"):
+            place(sh, 0.0, 3.2, PAGE_W, 0.4)
+    for name in ("그림 268", "그림 35"):
+        for sh in by_name.get(name, []):
+            sh.top = Inches(2.55)
+    TOP = 4.0
 
     # ============================ left column ============================
-    y = 4.7
-    place(one("TextBox 136"), L_X, y, COL_W, 0.8); y += 0.85          # "Abstract"
-    place(one("TextBox 137"), L_X, y, COL_W, 3.05)
+    y = TOP
+    place(one("TextBox 136"), L_X, y, COL_W, 0.8); y += 0.85
+    set_text(one("TextBox 136"), ["Objective"], size=46, color=NAVY, bold_all=True, after=0, line=1.0)
+    place(one("TextBox 137"), L_X, y, COL_W, 2.0)
     set_text(one("TextBox 137"), [
-        "**Goal.** Can offline RL improve DSRL's offline-to-online transition? DSRL fine-tunes a frozen diffusion "
-        "policy by learning its input noise, but pretrains no critic. "
-        "**Approach.** Keep the policy and the online algorithm; pretrain the action-space critic Q^{A} offline "
-        "with TD, IQL, CQL-style or Cal-QL-style objectives. "
-        "**Result.** Cal-QL cuts the online steps to 50% success by 2.7× on a 2D surrogate; on robomimic Can and "
-        "Square every pretrained critic raises the seed-mean floor of the early dip, but the best method depends "
-        "on task and metric.",
+        "Can offline RL improve DSRL's offline-to-online transition? We keep the frozen diffusion policy and the "
+        "online algorithm unchanged and pretrain the action-space critic Q^{A} offline with **TD, IQL, CQL-style "
+        "or Cal-QL-style** objectives, comparing them on a 2D surrogate and on robomimic Can and Square.",
     ])
-    y += 3.1
+    y += 2.05
 
-    place(one("TextBox 138"), L_X, y, COL_W, 0.8); y += 0.85          # "Background"
-    place(one("TextBox 139"), L_X, y, COL_W, 3.05)
+    place(one("TextBox 138"), L_X, y, COL_W, 0.8); y += 0.85
+    set_text(one("TextBox 138"), ["Approach"], size=46, color=NAVY, bold_all=True, after=0, line=1.0)
+    place(one("TextBox 139"), L_X, y, COL_W, 4.2)
     set_text(one("TextBox 139"), [
-        "**DSRL (CoRL 2025).** With DDIM at η = 0 the frozen policy maps noise to actions, a = π_{dp}(s, w), so the "
-        "noise w is the RL action. Q^{A}(s, a) is learned by TD on real transitions and Q^{W}(s, w) is distilled "
-        "from it through forward queries of the policy; no inversion a → w is needed.",
-        "**Cal-QL (NeurIPS 2023).** Conservative offline RL pushes down unseen actions; Cal-QL bounds that push-down "
-        "at a reference return so the critic keeps the behaviour policy's scale.",
+        "**DSRL (CoRL 2025)** fine-tunes a frozen diffusion policy by learning its input noise: with DDIM at η = 0, "
+        "a = π_{dp}(s, w), so the noise w is the RL action. Q^{A}(s, a) is learned by TD on real transitions and "
+        "Q^{W}(s, w) is distilled from it through forward queries of the policy. We pretrain Q^{A} offline with one "
+        "offline RL objective, distil it into Q^{W}, then run the **unmodified** online algorithm.",
+        "**Cal-QL (NeurIPS 2023)** differs from CQL-style only inside the conservative penalty: each sampled "
+        "unseen-action value enters it as",
+        ("          Q(s, a)   →   max( Q(s, a),  G_{t} )", {"bold_all": True}),
+        "with G_{t} the demonstration's Monte-Carlo return-to-go at chunk granularity. This bounds the penalty's "
+        "push-down; it does not constrain the learned Q itself.",
     ])
-    y += 3.1
+    y += 4.25
+    remove(one("TextBox 142"))
+    remove(one("TextBox 143"))
 
     diagram = one("Picture 140")
-    dw = 8.0
+    dw = 8.6
     dh = dw / (10.9 / 4.5)
     place(diagram, L_X + (COL_W - dw) / 2, y, dw, dh); y += dh + 0.05
     place(one("TextBox 141"), L_X, y, COL_W, 0.4)
@@ -217,18 +235,6 @@ def main():
         "Q^{A} is the only network pretrained offline; it is the learning target of Q^{W}.",
     ], size=18, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
     y += 0.45
-
-    place(one("TextBox 142"), L_X, y, COL_W, 0.8); y += 0.85          # "Method"
-    place(one("TextBox 143"), L_X, y, COL_W, 2.85)
-    set_text(one("TextBox 143"), [
-        "Pretrain Q^{A} offline with one offline RL objective, distil it into Q^{W}, then run the **unmodified** "
-        "DSRL online algorithm. Cal-QL differs from CQL-style only inside the conservative penalty: each sampled "
-        "unseen-action value enters the penalty as",
-        ("          Q(s, a)   →   max( Q(s, a),  G_{t} )", {"bold_all": True}),
-        "with G_{t} the demonstration's Monte-Carlo return-to-go at chunk granularity. This bounds the penalty's "
-        "push-down; it does not constrain the learned Q itself.",
-    ])
-    y += 2.9
 
     arms = one("Table 144")
     place(arms, L_X, y)
@@ -246,24 +252,31 @@ def main():
     remove(one("TextBox 146"))
     y += 1.95
 
-    add_textbox(slide, L_X, y, COL_W, 0.45, ["**Offline Q-values relative to demonstration returns**"], size=21, after=0)
+    add_textbox(slide, L_X, y, COL_W, 0.45, ["**Critic diagnostics**"], size=24, color=NAVY, after=0, line=1.0)
     y += 0.5
+    bias = one("Table 153")
+    place(bias, L_X, y)
+    rename_first_cell(bias, 1, 0, "DSRL baseline")
+    rename_first_cell(bias, 0, 0, "GapReach2D  Q − G")
+    y += 0.55 * 5 + 0.05
+    place(one("TextBox 154"), L_X, y, COL_W, 0.7)
+    set_text(one("TextBox 154"), [
+        "GapReach2D (returns in [0, 1]): Cal-QL shows the smallest online over-estimation spike; CQL's scale collapsed.",
+    ], size=16, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
+    y += 0.75
+
     add_table(slide, L_X, y, COL_W, [
-        ["Offline phase", "GapReach2D  Q − G", "Can  E_{w}Q^{A} − G", "Square  E_{w}Q^{A} − G"],
-        ["TD warm-start", "+0.28", "−49", "−98"],
-        ["CQL", "**−9.06**", "−70", "+2"],
-        ["Cal-QL", "−0.22", "−58", "+23"],
-    ], col_w=[2.9, 2.7, 2.65, 2.65], row_h=[0.55, 0.5, 0.5, 0.5], size=19)
+        ["Robomimic, before online", "Can  E_{w}Q^{A} − G", "Square  E_{w}Q^{A} − G"],
+        ["TD", "−49", "−98"],
+        ["CQL-style", "−70", "+2"],
+        ["Cal-QL-style", "−58", "+23"],
+    ], col_w=[4.3, 3.3, 3.3], row_h=[0.55, 0.5, 0.5, 0.5], size=19)
     y += 2.1
-    add_textbox(slide, L_X, y, COL_W, 1.35, [
-        "Before online learning. GapReach: Q − G with returns in [0, 1]. Robomimic: Q on prior-noise actions "
-        "π_{dp}(s, w) minus the demonstration return G (≈ −100 Can, −150 Square) — a scale comparison, not an "
-        "estimation error.",
-        "GapReach online, 2,000 steps into fine-tuning: Q − G = +0.71 (DSRL), +0.72 (TD), +0.45 (CQL), "
-        "**+0.17 (Cal-QL)** — the calibrated critic shows the smallest over-estimation spike (surrogate diagnostic "
-        "on its own return scale; not comparable to the robomimic columns).",
-    ], size=15, color=MUTED, align=PP_ALIGN.CENTER, after=3, line=1.05)
-    y += 1.4
+    add_textbox(slide, L_X, y, COL_W, 0.75, [
+        "Q on prior-noise actions π_{dp}(s, w) minus the demonstration return G (≈ −100 Can, −150 Square): a scale "
+        "comparison on a different return scale, not an estimation error and not comparable to the table above.",
+    ], size=15, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.05)
+    y += 0.8
 
     add_textbox(slide, L_X, y, COL_W, 2.1, [
         "**Metrics & protocol.** Online step = env step − initial rollout (24,016 Can / 32,016 Square). "
@@ -275,7 +288,7 @@ def main():
     left_bottom = y + 2.1
 
     # ============================ right column ===========================
-    y = 4.7
+    y = TOP
     place(one("TextBox 147"), R_X, y, COL_W, 0.8); y += 0.85          # "Experiments"
     place(one("TextBox 148"), R_X, y, COL_W, 2.5)
     set_text(one("TextBox 148"), [
@@ -286,7 +299,7 @@ def main():
     ])
     y += 2.55
     curve = one("Picture 149")
-    ch = 3.0
+    ch = 3.3
     cw = ch * (7.5 / 5.5)
     place(curve, R_X + (COL_W - cw) / 2, y, cw, ch); y += ch + 0.05
     place(one("TextBox 150"), R_X, y, COL_W, 0.4); y += 0.45
@@ -296,7 +309,7 @@ def main():
     y += 0.55 * 5 + 0.05
     place(one("TextBox 152"), R_X, y, COL_W, 0.4); y += 0.5
 
-    for name in ("Table 153", "TextBox 154", "Picture 155", "TextBox 156"):
+    for name in ("Picture 155", "TextBox 156"):
         remove(one(name))
 
     add_textbox(slide, R_X, y, COL_W, 2.0, [
@@ -307,7 +320,7 @@ def main():
     ])
     y += 2.05
 
-    ph = 2.4
+    ph = 2.5
     pw = ph * 1.6
     gap_x = 0.5
     x0 = R_X + (COL_W - (2 * pw + gap_x)) / 2
@@ -321,7 +334,7 @@ def main():
                 size=18, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
     y += 0.4
 
-    lw = 8.8
+    lw = 9.3
     lh = lw / (10.9 / 5.6)
     slide.shapes.add_picture(f"{args.figs}/critic_ladder_early.png", Inches(R_X + (COL_W - lw) / 2), Inches(y),
                              width=Inches(lw), height=Inches(lh))
