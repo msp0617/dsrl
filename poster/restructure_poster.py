@@ -20,6 +20,7 @@ Measured on the team's file: Arial 21 pt in a 10.9 in column wraps at about
 """
 import argparse
 import copy
+import csv
 import re
 
 from pptx import Presentation
@@ -173,6 +174,8 @@ def main():
     ap.add_argument("--in", dest="src", required=True)
     ap.add_argument("--figs", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--results", default="results/2026-09-08",
+                    help="audited results dir; the robomimic table is generated from its groups.csv")
     args = ap.parse_args()
 
     prs = Presentation(args.src)
@@ -309,7 +312,7 @@ def main():
     ])
     y += 2.15
     remove(one("Picture 149"))
-    cw = 5.8
+    cw = 5.4
     ch = cw / (2136 / 1548)
     slide.shapes.add_picture(f"{args.figs}/gapreach_curve.png", Inches(R_X + (COL_W - cw) / 2), Inches(y),
                              width=Inches(cw), height=Inches(ch))
@@ -324,15 +327,14 @@ def main():
     for name in ("Picture 155", "TextBox 156"):
         remove(one(name))
 
-    add_textbox(slide, R_X, y, COL_W, 1.9, [
+    add_textbox(slide, R_X, y, COL_W, 1.7, [
         "**Robomimic Can and Square.** All five conditions, 3–5 seeds, 150k env steps, no demonstration replay so "
         "that only the critic differs. Dashed line: the frozen diffusion policy with N(0, I) noise (Can 0.405, "
-        "Square 0.494); solid grey: DSRL baseline, the same policy fine-tuned online from a random critic. "
-        "Curves: early window, seed mean ± SE.",
+        "Square 0.494); solid grey: DSRL baseline (random critic). Curves: early window, seed mean ± SE.",
     ])
-    y += 1.95
+    y += 1.75
 
-    ph = 2.2
+    ph = 2.0
     pw_can, pw_sq = ph * (870 / 370), ph * (600 / 360)
     gap_x = 0.4
     x0 = R_X + (COL_W - (pw_can + pw_sq + gap_x)) / 2
@@ -346,41 +348,63 @@ def main():
                 size=18, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
     y += 0.4
 
-    lw = 8.2
+    lw = 7.5
     lh = lw / (10.9 / 5.6)
     slide.shapes.add_picture(f"{args.figs}/critic_ladder_early.png", Inches(R_X + (COL_W - lw) / 2), Inches(y),
                              width=Inches(lw), height=Inches(lh))
     y += lh + 0.05
-    add_table(slide, R_X, y, COL_W, [
-        ["", "Can", "", "", "Square", "", ""],
-        ["Critic", "min", "early AUC", "129k", "min", "early AUC", "127k"],
-        ["DSRL baseline (n=5)", "0.24", "0.41±0.03", "0.53±0.06", "0.23", "0.40±0.01", "0.41±0.06"],
-        ["IQL (n=5 / 3)", "0.34", "0.49±0.02", "0.56±0.02", "0.37", "0.44±0.01", "0.56±0.02"],
-        ["TD (n=3)", "0.39", "0.47±0.03", "0.56±0.03", "0.44", "0.49±0.02", "0.42±0.06"],
-        ["CQL-style (n=3)", "0.35", "0.48±0.02", "0.58±0.05", "0.37", "0.47±0.01", "0.33±0.08"],
-        ["Cal-QL-style (n=3)", "0.34", "0.43±0.02", "0.51±0.05", "0.40", "0.46±0.03", "0.42±0.05"],
-    ], col_w=[2.4, 1.15, 1.6, 1.55, 1.15, 1.6, 1.45], row_h=[0.45, 0.5, 0.44, 0.44, 0.44, 0.44, 0.44],
-        size=17, header_rows=2, merges=[(0, 1, 0, 3), (0, 4, 0, 6)])
-    y += 0.45 + 0.5 + 0.44 * 5 + 0.2
+    groups = {}
+    with open(f"{args.results}/groups.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            groups[(row["task"], row["group"])] = row
+
+    METHODS = (("DSRL baseline", "baseline"), ("IQL", "iql"), ("TD", "td"), ("CQL-style", "cql"), ("Cal-QL-style", "calql"))
+    METRICS = (("min_mean_curve", None), ("auc_early", "auc_early_se"), ("endpoint", "endpoint_se"))
+    best = {(t, k): max(float(groups[(t, g)][k]) for _, g in METHODS) for t in ("can", "square") for k, _ in METRICS}
+
+    def cell(task, group, key, se_key=None):
+        row = groups[(task, group)]
+        v = float(row[key])
+        text = "%.3f" % v if se_key is None else "%.3f±%.3f" % (v, float(row[se_key]))
+        return "**%s**" % text if v == best[(task, key)] else text
+
+    def table_row(label, group):
+        n_can, n_sq = groups[("can", group)]["n"], groups[("square", group)]["n"]
+        name = "%s (n=%s)" % (label, n_can) if n_can == n_sq else "%s (n=%s / %s)" % (label, n_can, n_sq)
+        return [name] + [cell(t, group, k, se) for t in ("can", "square") for k, se in METRICS]
+
+    rows = [["", "Can", "", "", "Square", "", ""],
+            ["Critic", "min", "early AUC", "129k", "min", "early AUC", "127k"]]
+    rows += [table_row(label, group) for label, group in METHODS]
+    add_table(slide, R_X, y, COL_W, rows,
+              col_w=[2.45, 0.9, 1.55, 1.55, 0.9, 1.55, 2.0], row_h=[0.45, 0.5, 0.42, 0.42, 0.42, 0.42, 0.42],
+              size=16, header_rows=2, merges=[(0, 1, 0, 3), (0, 4, 0, 6)])
+    y += 0.45 + 0.5 + 0.42 * 5 + 0.22
+    add_textbox(slide, R_X, y, COL_W, 0.35, [
+        "Bold indicates the highest observed value within each task and metric, not statistical significance.",
+    ], size=16, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
+    y += 0.45
 
     place(one("TextBox 157"), R_X, y, COL_W, 0.6); y += 0.62        # "Discussion"
-    place(one("TextBox 158"), R_X, y, COL_W, 3.3)
+    place(one("TextBox 158"), R_X, y, COL_W, 3.85)
     set_text(one("TextBox 158"), [
         "**GapReach2D.** Cal-QL reaches 50% success in 2.7× fewer online steps; plain CQL is slower than no "
         "pretraining, its Q collapsed to a flat −7.7.",
-        "**Can · Square.** Every pretrained critic raises the seed-mean floor of the early dip (Can 0.24 → "
-        "0.34–0.39, Square 0.23 → 0.37–0.44); Cal-QL-style adds no consistent benefit over IQL (seed-matched early "
-        "AUC −0.08 ± 0.02 on Can, late −0.15 ± 0.06 on Square). On Square the seed means favour TD early and IQL "
-        "late; n = 3–5, no significance claimed. Robomimic CQL/Cal-QL are critic-only adaptations.",
+        "**Can · Square.** TD warm-start achieved the highest minimum of the mean success curve on both robotic "
+        "tasks. IQL had the highest mean early AUC on Can, while late success-rate means were close among TD, IQL "
+        "and CQL-style. On Square, TD had the highest mean early AUC and IQL the highest mean late success rate. "
+        "These rankings are descriptive given the limited number of seeds (3–5). Cal-QL-style pretraining provided "
+        "no consistent additional benefit on the robotic tasks (seed-matched vs IQL: early AUC −0.08 ± 0.02 on Can, "
+        "late −0.15 ± 0.06 on Square); robomimic CQL/Cal-QL are critic-only adaptations.",
         "Auxiliary ablations suggest that online entropy settings and demonstration replay also affect transition "
         "performance. Future work will examine their interaction with critic pretraining and the persistence of "
         "calibration during online learning.",
     ], size=18, after=3, line=1.08)
-    right_bottom = y + 3.3
+    right_bottom = y + 3.85
 
     # ============================ conclusion bar ==========================
-    top = max(left_bottom, right_bottom) + 0.12
-    bar_h = 1.0
+    top = max(left_bottom, right_bottom) + 0.35
+    bar_h = 1.15
     bar = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(L_X), Inches(top), Inches(PAGE_W - 2 * L_X), Inches(bar_h))
     bar.adjustments[0] = 0.15
     bar.fill.solid()
@@ -389,10 +413,11 @@ def main():
     bar.line.width = Pt(2.25)
     bar.shadow.inherit = False
     set_text(bar, [
-        "**Conclusion.** Offline RL-based critic pretraining can improve the offline-to-online transition in DSRL, "
-        "with benefits depending on the task and evaluation metric.",
-        "Cal-QL improves sample efficiency on GapReach2D, but its additional gains are inconsistent on Can and Square.",
-    ], size=20, color=NAVY, line=1.05, after=2, align=PP_ALIGN.CENTER)
+        "**Conclusion.** Offline RL-based critic pretraining can improve DSRL's offline-to-online transition. "
+        "TD warm-start showed promise for mitigating early performance dips, while IQL achieved the highest mean "
+        "late success rate on Square. Cal-QL improved sample efficiency on GapReach2D but provided no consistent "
+        "additional gain on the robotic tasks.",
+    ], size=20, color=NAVY, line=1.08, after=0, align=PP_ALIGN.CENTER)
     bar.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
     print("left ends %.2f, right ends %.2f, bar %.2f-%.2f (page %.2f)" % (left_bottom, right_bottom, top, top + bar_h, PAGE_H))
 
