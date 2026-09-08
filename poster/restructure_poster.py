@@ -20,6 +20,7 @@ import re
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
@@ -175,18 +176,18 @@ def main():
                      size=54, color=NAVY, align=PP_ALIGN.CENTER, line=1.0, after=0, bold_all=True)
 
     # ---- left column ---------------------------------------------------
-    place(one("TextBox 137"), L_X, 5.55, COL_W, 3.5)
+    place(one("TextBox 137"), L_X, 5.55, COL_W, 3.3)
     set_text(one("TextBox 137"), [
         "**DSRL** fine-tunes a frozen diffusion policy by learning which initial noise to feed it, but its "
         "offline-to-online setting applies **no offline RL** to the critic: Q^{A} starts uncalibrated and its error "
         "propagates through the two-critic chain. We explore offline RL methods for pretraining that critic — "
         "**TD, IQL, CQL, Cal-QL** — with the online algorithm untouched. On a 2D surrogate Cal-QL cuts the online "
         "steps to 50% success by **2.7×**; on robomimic Can and Square every pretrained critic lifts the floor of "
-        "the early dip, but no method beats in-sample IQL — the SAC temperature dominates the transition.",
+        "the early dip, but no method beats in-sample IQL.",
     ])
 
-    place(one("TextBox 138"), L_X, 9.1, COL_W, 0.8)
-    place(one("TextBox 139"), L_X, 9.95, COL_W, 2.9)
+    place(one("TextBox 138"), L_X, 8.95, COL_W, 0.8)
+    place(one("TextBox 139"), L_X, 9.8, COL_W, 2.9)
     set_text(one("TextBox 139"), [
         "**DSRL (CoRL 2025).** With DDIM at η = 0 the frozen policy is a deterministic map a = π_{dp}(s, w), so the "
         "initial noise w is the RL action. DSRL-NA learns Q^{A}(s, a) by TD on real transitions and distils "
@@ -197,12 +198,12 @@ def main():
     ])
 
     diagram = one("Picture 140")
-    dw = 6.5
-    place(diagram, L_X + (COL_W - dw) / 2, 12.9, dw, dw / (10.9 / 4.5))
-    place(one("TextBox 141"), L_X, 15.6, COL_W, 0.4)
+    dw = 9.2
+    place(diagram, L_X + (COL_W - dw) / 2, 12.8, dw, dw / (10.9 / 4.5))
+    place(one("TextBox 141"), L_X, 16.65, COL_W, 0.4)
 
-    place(one("TextBox 142"), L_X, 16.1, COL_W, 0.8)
-    place(one("TextBox 143"), L_X, 16.95, COL_W, 2.5)
+    place(one("TextBox 142"), L_X, 17.15, COL_W, 0.8)
+    place(one("TextBox 143"), L_X, 18.0, COL_W, 2.5)
     set_text(one("TextBox 143"), [
         "Pretrain Q^{A} offline with an offline RL method, then run the **unmodified** DSRL online algorithm. "
         "Conservatism lives offline only; Cal-QL's calibration is one line inside the penalty:",
@@ -211,48 +212,50 @@ def main():
     ])
 
     arms = one("Table 144")
-    place(arms, L_X, 19.4)
+    place(arms, L_X, 20.45)
     rename_first_cell(arms, 1, 1, "none — DSRL baseline")
     insert_row_after(arms, 2, ["iql", "in-sample expectile V (robomimic)", "does avoiding OOD queries help?"])
 
-    place(one("TextBox 145"), L_X, 22.8, COL_W, 1.15)
+    place(one("TextBox 145"), L_X, 23.85, COL_W, 1.15)
     set_text(one("TextBox 145"), [
         "GapReach2D: four arms one factor apart, identical data and online code. Robomimic runs all five; its "
         "CQL/Cal-QL are critic-only adaptations (IQL V target, data action anchored in the log-sum-exp).",
     ], size=19, color=MUTED, align=PP_ALIGN.CENTER, after=0)
 
-    place(one("TextBox 146"), L_X, 24.0, COL_W, 1.3)
+    place(one("TextBox 146"), L_X, 25.05, COL_W, 1.3)
     set_text(one("TextBox 146"), [
         "**Controls.** Actor and Q^{W} stay frozen during pretraining; Q^{A} is then distilled into Q^{W}, all the "
         "actor reads. Penalty candidates are physical action chunks π_{dp}(s, w), never latent noise.",
     ])
 
-    add_textbox(slide, L_X, 25.4, COL_W, 0.45, ["**Offline critic bias on unseen actions, before online learning**"],
+    add_textbox(slide, L_X, 26.45, COL_W, 0.45, ["**Offline Q-values relative to demonstration returns**"],
                 size=21, after=0)
-    add_table(slide, L_X, 25.9, COL_W, [
+    add_table(slide, L_X, 26.95, COL_W, [
         ["Offline phase", "GapReach2D  Q − G", "Can  E_{w}Q^{A} − G", "Square  E_{w}Q^{A} − G"],
         ["TD warm-start", "+0.28", "−49", "−98"],
         ["CQL", "**−9.06**", "−70", "+2"],
         ["Cal-QL", "−0.22", "−58", "+23"],
     ], col_w=[2.9, 2.7, 2.65, 2.65], row_h=[0.55, 0.5, 0.5, 0.5], size=19)
-    add_textbox(slide, L_X, 27.98, COL_W, 0.4, [
-        "Scales: GapReach returns ∈ [0, 1]; robomimic G ≈ −100 (Can) / −150 (Square), prior-noise actions on demo states.",
-    ], size=15, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
+    add_textbox(slide, L_X, 29.05, COL_W, 0.7, [
+        "Before online learning. Scales: GapReach returns ∈ [0, 1]; robomimic G ≈ −100 (Can) / −150 (Square). "
+        "Robomimic Q is taken on prior-noise actions and G on demonstration actions: a scale comparison, not an "
+        "estimation error.",
+    ], size=15, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.05)
 
-    add_textbox(slide, L_X, 28.45, COL_W, 0.45,
-                ["**Why offline RL gains fade online: the temperature**"], size=21, after=0)
-    dip_w = 4.7
-    dip_h = dip_w / (5.6 / 4.4)
-    slide.shapes.add_picture(f"{args.figs}/dip_can.png", Inches(L_X), Inches(28.95), width=Inches(dip_w),
-                             height=Inches(dip_h))
-    add_textbox(slide, L_X + dip_w + 0.2, 28.9, COL_W - dip_w - 0.2, dip_h, [
-        "Online, the critic target is r + γ(Q̄ − α log π′) with auto-α starting at 1.0 and target entropy 0. Within "
-        "25k steps the entropy bonus overwrites the pretrained scale while the noise policy's entropy collapses from "
-        "≈17 to 0 — the dip coincides with that collapse. Holding the temperature (fixed α = 0.3, or target entropy 12 "
-        "with α_{0} = 0.3) removes the dip on Can: min 0.47 vs 0.24, final 0.74 vs 0.53. Cal-QL on top adds nothing "
-        "(AUC 0.62 vs 0.59). On Square it only softens the dip. Our anchored CQL does not collapse on robomimic, so "
-        "the Cal-QL floor has little left to fix.",
-    ], size=16.5, line=1.1, after=0)
+    box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(L_X), Inches(30.0), Inches(COL_W), Inches(2.35))
+    box.adjustments[0] = 0.08
+    box.fill.solid()
+    box.fill.fore_color.rgb = RGBColor(0xEA, 0xF1, 0xF8)
+    box.line.color.rgb = TEAL
+    box.line.width = Pt(2.25)
+    box.shadow.inherit = False
+    set_text(box, [
+        "**Take-away.** Offline critic pretraining mitigates the early performance dip, but calibration does not "
+        "consistently provide additional gains on the tested robotic tasks.",
+    ], size=25, color=NAVY, line=1.1, after=0)
+    box.text_frame.margin_left = box.text_frame.margin_right = Inches(0.3)
+    box.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+
 
     # ---- right column --------------------------------------------------
     place(one("TextBox 148"), R_X, 5.55, COL_W, 2.75)
@@ -280,14 +283,13 @@ def main():
         "demonstration replay so only the critic differs. Reference: the frozen diffusion policy with N(0, I) noise "
         "(Can 0.405, Square 0.494).",
     ])
-    lw = 10.0
-    slide.shapes.add_picture(f"{args.figs}/critic_ladder_early.png", Inches(R_X + (COL_W - lw) / 2), Inches(18.1),
+    lw = 10.5
+    slide.shapes.add_picture(f"{args.figs}/critic_ladder_early.png", Inches(R_X + (COL_W - lw) / 2), Inches(18.15),
                              width=Inches(lw), height=Inches(lw / (10.9 / 5.6)))
-    add_textbox(slide, R_X, 23.3, COL_W, 0.75, [
-        "Early window, mean ± SE over seeds. Every offline-RL critic lifts the floor of the dip; none removes it, "
-        "and Cal-QL is not the best.",
-    ], size=19, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
-    add_table(slide, R_X, 24.1, COL_W, [
+    add_textbox(slide, R_X, 23.6, COL_W, 0.6, [
+        "Early window, mean ± SE over seeds. Every offline-RL critic lifts the floor of the dip; none removes it.",
+    ], size=18, color=MUTED, align=PP_ALIGN.CENTER, after=0, line=1.0)
+    add_table(slide, R_X, 24.25, COL_W, [
         ["", "Can", "", "", "Square", "", ""],
         ["Critic", "min", "early AUC", "129k", "min", "early AUC", "127k"],
         ["DSRL baseline (n=5)", "0.24", "0.41±0.03", "0.53±0.06", "0.23", "0.40±0.01", "0.41±0.06"],
@@ -298,19 +300,20 @@ def main():
     ], col_w=[2.4, 1.15, 1.6, 1.55, 1.15, 1.6, 1.45], row_h=[0.45, 0.5, 0.46, 0.46, 0.46, 0.46, 0.46],
         size=17, header_rows=2, merges=[(0, 1, 0, 3), (0, 4, 0, 6)])
 
-    place(one("TextBox 157"), R_X, 27.55, COL_W, 0.8)
-    place(one("TextBox 158"), R_X, 28.4, COL_W, 4.2)
+    place(one("TextBox 157"), R_X, 27.6, COL_W, 0.8)
+    place(one("TextBox 158"), R_X, 28.45, COL_W, 4.45)
     set_text(one("TextBox 158"), [
         "**GapReach2D: calibration cuts interaction.** Cal-QL needs 2.7× fewer online steps to 50% success; plain "
         "CQL backfires by flattening Q.",
-        "**Robomimic: pretraining transfers, calibration does not.** Every offline-RL critic lifts the dip floor; "
-        "in-sample IQL is the safest default, and Cal-QL is no better (seed-matched early AUC −0.08 ± 0.02 on Can; "
-        "late −0.15 ± 0.06 on Square).",
-        "**The temperature governs the transition.** Auto-α drives the noise policy's entropy to zero; holding it "
-        "removes the dip on Can. Demo replay: best late performance (0.86), deepest dip (0.09).",
-        "**Limits & next.** 3–5 seeds, ±0.1 evaluation noise; Square keeps a dip in every setting. Next: offline RL "
-        "that survives the online soft target (hard backup, held temperature), replay + temperature, more tasks.",
-    ], size=19, after=5)
+        "**Robomimic: pretraining helps, calibration adds little.** Every offline-RL critic lifts the floor of the "
+        "dip, but Cal-QL-style pretraining provides no consistent additional benefit in the tested settings "
+        "(seed-matched vs IQL: early AUC −0.08 ± 0.02 on Can, late −0.15 ± 0.06 on Square).",
+        "**Entropy, briefly.** Preliminary ablations suggest the online entropy setting also shapes the transition "
+        "(fixed α = 0.3 removes the mean-curve dip on Can, min 0.47 vs 0.24); future work will test whether "
+        "preserving critic calibration online improves robustness.",
+        "**Limits.** 3–5 seeds, ±0.1 evaluation noise; Square keeps a dip in every setting; robomimic CQL/Cal-QL are "
+        "critic-only adaptations.",
+    ], size=18.5, after=4)
 
     prs.save(args.out)
     print("wrote", args.out)
