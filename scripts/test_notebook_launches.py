@@ -79,8 +79,42 @@ def test_new_vm3_is_a_self_contained_square_launch_plan():
     assert "runtime.unassign()" in code
 
 
+def test_prefill_alpha_launches_fixed_03_and_auto_015_target_12():
+    code = notebook_code("vm_prefill_alpha.ipynb")
+    assert "launch can_prefill_fixa03_s$S" in code
+    assert "launch can_prefill_t12i_a015_s$S" in code
+    assert "$PREFILL train.ent_coef=0.3\n" in code
+    assert "$PREFILL train.ent_coef=auto_0.15 train.target_ent=12\n" in code
+    assert code.count("variant=baseline") == 2
+    assert "offline_mix.mode=prefill offline_data_path=$PROJ/offline/can_train_offline.npz" in code
+    assert "for kind in ('prefill_fixa03', 'prefill_t12i_a015')" in code
+    assert "--only can_prefill_fixa03_s,can_prefill_t12i_a015_s" in code
+    assert "runtime.unassign()" in code
+
+
+def test_prefill_fixa015_is_a_single_fixed_alpha_arm():
+    code = notebook_code("vm_prefill_fixa015.ipynb")
+    assert "launch can_prefill_fixa015_s$S" in code
+    assert code.count("launch can_") == 1
+    assert "$PREFILL train.ent_coef=0.15\n" in code
+    assert "target_ent" not in code
+    assert "auto_" not in code
+    assert "variant=baseline" in code
+    assert "offline_mix.mode=prefill offline_data_path=$PROJ/offline/can_train_offline.npz" in code
+    assert "EXPECTED = [f'can_prefill_fixa015_s{s}' for s in (1, 2, 3)]" in code
+    assert "--only can_prefill_fixa015_s" in code
+    assert "runtime.unassign()" in code
+
+
 def test_new_notebooks_have_numbered_zero_to_nine_workflow():
-    for name in ("vm1_new.ipynb", "vm2_new.ipynb", "vm3_new.ipynb"):
+    for name in (
+        "vm1_new.ipynb",
+        "vm2_new.ipynb",
+        "vm3_new.ipynb",
+        "vm_hq_can.ipynb",
+        "vm_prefill_alpha.ipynb",
+        "vm_prefill_fixa015.ipynb",
+    ):
         text = notebook_text(name)
         for section in range(10):
             assert f"## {section}." in text, (name, section)
