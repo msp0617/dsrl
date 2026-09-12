@@ -955,10 +955,14 @@ done
 - 기존 다목적 노트북 대신 `colab/vm1_new.ipynb`, `colab/vm2_new.ipynb`, `colab/vm3_new.ipynb`를 사용한다. 각 노트북은 0→9 순서의 실행 전용판이며 1번의 condacolab 재시작 뒤 2번부터 계속한다.
 - VM1은 Can td/cql/calql 9개, VM2는 Can calql_t12i/prefill 6개, VM3은 Square td/cql/calql 9개만 띄운다. 모든 td launch는 `variant=td`이고 중복 프로세스는 다시 띄우지 않으며, 8번 자동 점검 뒤 9번 keepalive가 마지막 프로세스 종료 시 VM을 반납한다.
 - VM3 6번은 Square 9개 메타와 4,096-state 오프라인 진단을 전수 출력한다. 진단의 REJECT는 기록하되 온라인 시작을 막지는 않고, 검사 명령 자체가 실패한 경우에만 셀이 실패한다.
-## 21. 9/12(토) — 발표 뒤: 질문 하나로 좁힘, `can_tent12i_hq` 준비
+## 21. 9/12(토) — 발표 뒤: 남은 질문 둘로 좁힘, `colab/vm_hq_can.ipynb`
 
-- **발표(9/11) 피드백**: "critic을 왜 사전학습하나"에 답을 못 함; "RL은 원래 어렵다, 수맥부터 확인하라". 답은 저장소에 있었음(critic은 데모가 온라인 학습기에 닿는 유일한 통로·거의 공짜·재보니 dip만 얕게 하고 눈금은 soft target이 25k 안에 지움·방아쇠는 온도). 문제는 포스터 제목이 critic 교정을 기여처럼 약속하고 사다리 칸이 `[tonight]`로 비어 있었던 프레이밍. 다음 발표: 결과(엔트로피 붕괴)로 시작, critic 사다리는 "tested and bounded" 패널, 주장 등급표(해결/시사/열림).
-- **표현 교정(문헌 대조 결과)**: "Cal-QL 바닥이 안 묶인다" → 실제 88% 바닥 적용, 깨진 건 전제(정책 ≥ 행동정책). WSRL(Zhou, Peng, Li, Levine, Kumar, ICLR 2025)은 calibration 처방이 아니라 warm-up + 앙상블이고 dip 일부는 불가피하다고 인정. RLPD(Ball, Smith, Kostrikov, Levine)는 "up to 2.5x", 앙상블·UTD 20 포함. LP-DS는 "완화"(ICML 2026). "paper default" → "published config". "dip 없음"은 평균곡선 주장(고정 0.3 seed별 바닥 0.19~0.49).
+- **발표(9/11) 피드백**: "critic을 왜 사전학습하나"에 답을 못 함; "RL은 원래 어렵다, 수맥부터 확인하라". 답은 저장소에 있었다: DSRL-NA에서 데모가 온라인 학습기에 닿는 통로는 critic뿐(w 라벨 없음·π_dp 고정 → π_W 지도학습 불가), 거의 공짜(시뮬레이터 불필요, seed 공유), O2O 문헌의 표준 처방(Cal-QL). 재보니 dip을 얕게 하고(IQL 0.24→0.34, warmupc 회복 84k→42k) 최종은 못 바꾸며, 눈금은 soft target(α=1, +18/청크)이 25k 안에 지운다(IQL Q_W −145 → +40@29k). 포스터 Objective가 "왜"를 말하지 않고 바로 사다리로 갔던 것이 맞은 이유. 다음 발표: 30초 답("유일한 오프라인 통로·거의 공짜·dip 얕게·눈금은 지워짐·방아쇠는 온도")과 주장 등급표(해결/시사/열림).
+- **문헌 대조로 고친 표현**: "Cal-QL 바닥이 안 묶인다" → Can floor 사용률 97%(9/8 표), 깨진 건 전제(정책 ≥ 행동정책; prior 가치 < G). WSRL(Zhou, Peng, Li, Levine, Kumar, ICLR 2025)은 calibration이 아니라 warm-up + 앙상블이고 dip 일부는 불가피하다고 인정. RLPD(Ball, Smith, Kostrikov, Levine)는 "up to 2.5x", 앙상블·UTD 20 포함. LP-DS는 "완화"(ICML 2026). DSRL 원논문 실제 로봇 곡선(Fig. 7, 점당 10 rollout)은 3과제 중 2개가 초반에 BC 아래 — 저자 언급 없음.
 - **seed 예산**: per-seed SD 0.1에서 d=0.1을 80% power로 → arm당 ~16. Can early AUC(SD 0.035~0.06) 3~6, Square 127k(SD ~0.13) ~25. Square 주장은 n을 늘려도 "시사적".
-- **남은 질문은 하나**: "엔트로피 유지의 비용(critic 타깃 오염)을 β=0으로 피할 수 있는가". Square는 20.5에서 닫힘(hq 127k 0.49 vs 0.40 vs 0.37, 42k 0.33 = 판정선). **Can에서 무해한지**가 남음 → `colab/vm_hq_can.ipynb`: 9번(hq 7 + 9/7 밤 24 run 상태 회수 — 포스터 `[tonight]` 칸) → 10번 `can_tent12i_hq_s{1,2,3}`(tent12i + `train.critic_entropy_scale=0.0`, 150k) → 10b(선택) `square_tent12_hq_s{4,5}`. 상호작용 가설 명시: `can_hardq`(β=0, 목표 0)는 나빴으므로 "엔트로피를 붙든 상태에서만 β=0". 사전 판정: 무해 = 최저 ≥ 0.405 그리고 129k ≥ 0.53; 해로움 = 어느 하나라도 아래 → "γ 큰 과제 전용"으로 좁힘. 진단: `logp_mean` ≈ −12, `q_start − mc_return`이 tent12i·고정 0.3보다 0에 가까움.
-- 안 하는 것: seed 추가(Square 10b 제외), Lift/Transport, 300k 연장, Can Cal-QL 확장(9/7 밤 run 결과가 있으면 읽기만). 목표 엔트로피 스케줄은 미구현이며 hq가 충분하면 불필요.
+- **9/8 재분석 반영(`results/2026-09-08/README.md`)**: Square hq는 "닫힘"이 아니라 "지지"(tent12 대비 후반 +0.093 ± 0.020, 3/3; 초기 AUC −0.050 ± 0.040; 42k 0.33 < π_dp 0.494로 dip 잔존; seed-matched baseline 대비 후반 +0.018 ± 0.067). "두 과제 dip 제거"는 철회(Square π_dp 0.494). Cal-QL 단독·조합의 일관된 추가 이득 없음.
+- **남은 질문 둘 → `colab/vm_hq_can.ipynb`** (코드 변경 없음, 6 run이면 G4 한 대 5~6시간):
+  - 질문 1 (10번) `can_tent12i_hq_s{1,2,3}`: 엔트로피를 붙든 상태에서 β=0이 Can에서 무해한가. 상호작용 가설 명시(`can_hardq` β=0·목표 0은 AUC 0.298로 나빴음). 무해 = 최저 ≥ 0.405 그리고 129k ≥ 0.53 → 두 과제 공통 처방; 해로움 → hard target의 초반 비용 → β 스케줄(dip 창 soft, 이후 hard) 구현 근거. 그 전엔 스케줄을 구현하지 않는다.
+  - 질문 2 (10c, 선택) `can_prefill_t12i_s{1,2,3}`: prefill(129k 0.858, 최저 0.093) + t12i(최저 0.460, 129k 0.697)를 합치면 둘 다 얻는가. 둘 다 = 최저 ≥ 0.405 그리고 129k ≥ 0.80; 부분 = 후반 < 0.80(데모가 있어도 엔트로피 유지의 후반 비용); 실패 = 최저 < 0.405(prefill의 dip은 엔트로피 붕괴가 아님 → 엔트로피 설명의 경계).
+  - 10b(선택) `square_tent12_hq_s{4,5}`: n=5 정렬용, 초기 약점은 못 없앰(README §9). 우선순위 낮음.
+- 안 하는 것: Lift/Transport, 300k 연장, Cal-QL+hq, 목표 엔트로피 스케줄(미구현; 질문 1 결과 뒤 판단), LP-DS 비교.
