@@ -104,6 +104,11 @@ train:
   # target, 0 being a hard backup.
   reward_scale: 1.0
   critic_entropy_scale: 1.0
+  # critic_alpha_cap c > 0: the target's bonus uses min(alpha, c) while the
+  # actor keeps the automatic alpha; -1 = off. Binds only where auto-alpha
+  # climbs above c (Square at target entropy 12: alpha 15-20). train_log's
+  # critic_ent_coef is the temperature the target actually used.
+  critic_alpha_cap: -1
   init_rollout_steps: 2001 # 2001 x 4 envs x 4 chunk = 32,016 env steps, the paper's "initial steps 32000"
   action_magnitude: 1.5 # Maximum action magnitude in noise action space
   n_critics: 2 # Number of critic Q networks

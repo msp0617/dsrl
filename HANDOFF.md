@@ -1,6 +1,7 @@
 # DSRL offline-to-online 프로젝트 — 인수인계 (v3, 2026-09-04)
 
-> **현재 상태(2026-09-12 밤): §21–23과 [results/2026-09-12/README.md](results/2026-09-12/README.md)를 먼저 읽을 것.**
+> **현재 상태(2026-09-15): §24 — Square 전이 실험(critic 타깃 보너스 상한 `train.critic_alpha_cap` 신규 + 보상 정규화)의 설계·사전 등록·노트북(`colab/vm_square_rs.ipynb`, `colab/vm_square_cap.ipynb`)을 먼저 읽을 것. 아직 돌리지 않았다. 결과 해석의 기준은 여전히 §21–23과 [results/2026-09-12/README.md](results/2026-09-12/README.md).**
+> **9/12 밤 상태: §21–23과 [results/2026-09-12/README.md](results/2026-09-12/README.md).**
 > 온라인 본 실험 133 run(9/8 121 + 9/12 hq/prefill_t12i 6 + prefill_alpha 6), 오프라인 artifact 32/32.
 > 9/8 08:20 시점의 정리는 [HANDOFF_2026-09-08.md](HANDOFF_2026-09-08.md), 9/8 재분석은 `results/2026-09-08/README.md`.
 > 이 문서는 시간순 상세 기록으로 보존한다(§0·§2의 "76 run", "Square dip 사라진다"는 옛 기록이며 9/8에 철회됨).
@@ -1003,3 +1004,53 @@ done
 - **다중비교**: 이 분석에서 df=2 paired 검정 ~70개. |t| > 4.3(p < 0.05)이면서 3/3인 것만: a015 − prefill_t12i 10k/15k/10–15k 평균(t 11–13), fixa03 − prefill_t12i 104k/129k 평균 −0.131 ± 0.014(t −9.1), fixa03 − mix_prefill 10–15k 평균 +0.292 ± 0.056(t 5.2), a015 − fixalpha_03 10–15k 평균 +0.140 ± 0.016(t 8.7). 모두 사전 등록 대비가 아니다. 5k 판정은 평가 잡음(SE 0.05)이 아니라 seed 이질성(a015 s2 0.62 vs 0.10/0.13; seed 간 SD 0.17–0.29)이 정한다.
 - **쓰면 안 되는 문장**: "prefill_fixa03이 둘 다 얻었다/dip을 없앴다"(후반 0.763, fixalpha_03과 동급; 5k는 step-0 아래), "α 0.3이 데모 배치의 답이다"(§5 규칙 그대로), "prefill_t12i_a015가 Can 최고 성능으로 mix_prefill·prefill_t12i를 능가"(SE 안, 시점 의존, 5k 실패), "α 0.15 시작이 과도를 없앴다/과도 vs 정상상태를 갈랐다", "a015 = prefill_t12i(5k 한 seed 빼면)"(10k/15k 3/3 차이), "데모 후반 이득은 엔트로피를 낮출수록 단조 증가"(사다리·인과 불가), "데모가 있으면 저α dip이 커진다"(상태 맞추면 차이 없음), "Q_W 부호 반전이 mix_prefill dip의 표지/원인", "붕괴 상태가 원인", "prefill의 dip은 엔트로피와 무관", "γ = 0.999에서 Q_W 부풀음"(Can은 0.99), "a015 129k 0.892 ± 0.031"(at_env129k SE는 0.029; 0.032는 last-3), "2/3 seed가 0.405 아래"(1/3).
 - **다음(권고, 코드 변경 없음)** — 해석 1·2의 교란을 한 번에 가르는 판별 run: `can_prefill_fixa015_s{1,2,3}` = `offline_mix.mode=prefill offline_data_path=… train.ent_coef=0.15`(제어기 없음, 3 run ≈ 3 h). 5k에 dip이면 "수준(α≈0.15)"이 과도보다 앞서고, 없으면 과도 쪽; 129k가 ~0.85면 데모 후반 이득은 α **수준**(0.3 vs 0.15)의 문제, ~0.74면 auto-α 제어기 자체의 문제. 사전 판정은 §22와 같게 online 5,008 seed 평균 + seed-matched(fixalpha_03·prefill_fixa03·prefill_t12i·a015), 후반 104k/129k 평균(≥ 0.80 → α 수준, ≤ 0.78 → 제어기, 사이는 미정). 선택: 0–20k에 `eval_schedule` 2,512 격자. **노트북: `colab/vm_prefill_fixa015.ipynb`**(vm_prefill_alpha 판형 그대로, 7번 셀 3 launch, 9번 keepalive 자동 반납, 10번 zip; 사전 판정 전문은 0번 셀; `scripts/test_notebook_launches.py`가 launch 문자열을 고정). **하지 않는 것**: β 스케줄, 목표 엔트로피 스케줄, α 사다리 확장, Square 이식, 300k 연장, Cal-QL+hq, LP-DS 비교, "α 0.3이 답" 문구. 발표용으로는 §21의 30초 답·등급표를 이 결과까지 반영해 `results/2026-09-12/README.md` §6에 초안을 두었다.
+
+## 24. 9/15(화) — Square 전이 실험 설계·사전 등록: critic 타깃 보너스 상한 `train.critic_alpha_cap`(신규)과 보상 정규화 `train.reward_scale=0.2`. 노트북 `colab/vm_square_rs.ipynb`(갈래 A + 대조군) · `colab/vm_square_cap.ipynb`(갈래 B + Can 회귀). **아직 안 돌림.**
+
+§23의 "하지 않는 것: Square 이식"은 이 절로 대체한다 — 9/8·9/12 데이터에서 Square 실패의 기제 가설이 나왔고, 그것을 검정하는 실험이기 때문이다. 코드는 커밋 전 로컬(Windows, **Python 없음**)에서 테스트를 못 돌렸다: 데스크톱 `.venv`에서 `python scripts/test_offline_mix.py`·`test_resume_state.py`·`test_notebook_launches.py`를 먼저 돌리고, VM SC 6번 셀이 launch 전에 같은 테스트 + cap 스모크를 다시 돌린다(실패하면 7번으로 못 감).
+
+- **가설(§19.11·§20.5, 9/8 README §6, `diagnostic_groups.csv`)** — Square 전이 실패의 기제: (1) auto-α(목표 12)가 엔트로피를 지키려 α를 Q 스케일에 비례해 키운다(`square_tent12` bin 평균: online 0–5k 0.40 → 10k 0.62 → 20k 1.33 → 50k 6.4 → 90k 15.4 → 110k 20.1); (2) 그 α가 critic 타깃의 보너스 −α·log π′에 들어간다; (3) 보너스 ≈ α·H ≈ 20 × 12 = 240/step이 γ = 0.999로 에피소드(400 step = 100 청크) 안에 누적되어 `qw_mean` 143 → 30,916(online 115k); (4) Q가 폭주하면 critic 학습과 Q_W 증류가 스케일에 잡아먹혀 순위 정보를 잃는다. 근거: `square_tent12_hq`(β = 0)는 α가 0.17–0.37, Q_W가 −63~−115에 머물고 후반 0.490(tent12 s1–3 대비 +0.093 ± 0.020, 3/3)이지만 초기 AUC −0.050 ± 0.040·42k 0.330 — 즉 α 폭주는 보너스가 Q를 부풀리는 되먹임의 결과이고, hard backup은 후반을 살리되 초반을 잃는다. Can(γ 0.99)에서는 β = 0이 전 구간 해롭고(§22) 같은 부풀림은 약하다(Q_W +255, α ≤ 0.42). → **보너스는 필요하되 폭주만 막아야 한다.**
+- **핵심 아이디어 — 보너스에 상한**: critic 타깃에서만 α_c = min(α, cap), actor의 α는 auto 그대로. 타깃 `r + γ(Q̄ − min(α, cap)·log π′)`, actor 손실 `α·log π − Q_W` 불변. 구현: `o2o_utils.critic_ent_coef` + `DSRLResumable.critic_alpha_cap`(config `train.critic_alpha_cap`, 기본 −1 = 끔 → 상류와 같은 연산; `config_fingerprint`에 포함 → 다른 cap의 checkpoint는 resume 거부; `build_agent`가 설정), train_log 새 열 **`critic_ent_coef`**(타깃이 실제 쓴 온도 — cap이 물리면 = cap, 아니면 = `ent_coef`; `utils.LoggingCallback.log_train`), `plot_results.py` 기본 축 `square_cap`·`square_rs`·`can_cap`. 테스트: `scripts/test_offline_mix.py`에 기본값·fingerprint 1개 + min(α, cap) 산술 1개(torch 스텁에 `clamp` 추가), `scripts/test_notebook_launches.py`에 노트북 2개의 launch 문자열. 스모크(VM SC 6번): 고정 α 1.0으로 1,200 env step × 2 — cap 0.3이면 `critic_ent_coef` 열이 전부 0.3, cap −1이면 `ent_coef`와 같아야 통과.
+- **사용자 초안 대비 설계 수정 두 가지**
+  - (i) "cap 0.3은 Can에서 구성상 no-op(Can의 α는 0.3을 안 넘음)"은 **틀리다**: `can_tent12i`의 α는 online 20k–85k에 0.31–0.42(9/8 `diagnostic_groups.csv` bin 평균; 봉우리 0.42@45k, §19.8 seed별 0.3–0.49)라 cap 0.3이 그 구간에 물린다(보너스 최대 ~30% 감소). 그래서 `can_tent12i_cap03`은 "무해 확인"이 아니라 **"Square를 고치는 같은 처방(cap 0.3)이 Can을 해치는가"** 시험이다. 구성상 no-op은 cap ≥ 0.5에서만 성립하고 코드 경로의 무해성은 스모크(cap −1)와 단위 테스트가 잰다. Can에 비용이 나오면 cap 0.5로 재시험.
+  - (ii) Square 비교군은 `square_tent12`(auto-α **초기 1.0**)와 `square_tent12_hq`뿐인데 새 arm은 전부 tent12i(**초기 0.3**) → 대조군 **`square_tent12i_s{1,2,3}`**(cap·rs 없음)을 VM SR에 추가했다(권장; 크레딧이 모자라면 7번 셀 세 번째 launch 줄 삭제). 이것 없이는 "cap − tent12"·"rs02 − tent12" 차이에 α 초기값 효과가 섞인다(Square에서 α 초기값의 효과는 미측정; cap arm의 critic은 어차피 cap에 묶이므로 초기값은 actor 쪽 초반 몇 k step에만 작용할 것으로 예상). tent12i를 유지한 이유: 갈래 A는 "Can 처방(tent12i) + 보상 정규화"의 전이 검정이고, Can 회귀와 같은 처방이어야 "두 과제 공통"을 말할 수 있다.
+- **실행(두 VM, 같은 밤, 150k, 5k 격자, `variant=baseline offline_mix.mode=none load_offline_data=False`)**
+  - **VM SR** `colab/vm_square_rs.ipynb`(vm3_new 판형, 코드 변경 없음, 9 run ≈ 160 GB): `square_tent12i_rs02_s{1,2,3}` = `train.ent_coef=auto_0.3 train.target_ent=12 train.reward_scale=0.2`; `square_fixa015_rs02_s{1,2,3}` = `train.ent_coef=0.15 train.reward_scale=0.2`; 대조군 `square_tent12i_s{1,2,3}` = `train.ent_coef=auto_0.3 train.target_ent=12`.
+  - **VM SC** `colab/vm_square_cap.ipynb`(코드 변경 있음 → 3번 셀이 `critic_alpha_cap` 커밋을 확인, 6번 셀이 테스트·스모크 게이트; Can·Square 자산 둘 다 복원; 9 run ≈ 155 GB): `square_tent12i_cap03_s{1,2,3}` = `… train.critic_alpha_cap=0.3`; `square_tent12i_cap1_s{1,2,3}` = `… train.critic_alpha_cap=1.0`; `can_tent12i_cap03_s{1,2,3}`(`dsrl_can.yaml`, `… train.critic_alpha_cap=0.3`).
+  - 비용: 18 run ≈ G4 두 대 × 5–6 h ≈ 크레딧 110 안팎(대조군 빼면 15 run ≈ 100). GCE면 `gce/runs_example.txt`의 cap·rs 예시 줄.
+  - cap이 물리는 시점 예상(tent12 α 궤적 기준; tent12i는 0.3에서 출발하므로 조금 늦을 수 있음): cap 0.3 → online ~5–10k(env 37–42k)부터 끝까지; cap 1.0 → online ~15–20k(env 47–52k)부터. 42k 시점의 critic 온도: tent12 ≈ 0.6 / cap03 0.3 / hq 0. 보너스 상한 0.3 × 12 ≈ 3.6/step → Q_W ≈ 수백(Σγ^t ≈ 95 × 3.6 + 수익; tent12 23,000).
+  - rs arm 주의: `reward_scale`은 타깃의 r만 곱하므로 `qw_mean`·`q_start`가 **0.2배 눈금**(비교 시 5배), `q_start − mc_return`은 눈금이 달라 rs arm에선 그대로 못 쓴다. 로그의 보상·성공률은 그대로.
+- **참조표(9/8 `groups.csv`·`per_seed.csv`·`eval_clean.csv`; 정의는 9/8 README §2: online = env − 32,016, 초기 창 online 0–67,984, 최저 = 5k 격자 online 5,008·k의 seed 평균곡선, 후반 env 127,136·200 ep; 102k = env 102,128)**
+
+| 조건 | n | 42k(online 10,016) | 초기 AUC | 최저(평균곡선) | 102k | 127k | 102k/127k 평균 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| π_dp(N(0,I)) | — | 0.494 | | | | 0.494 | |
+| square_baseline | 5 | 0.234 | 0.401 | 0.234@10k | 0.392 | 0.407 | 0.400 |
+| square_baseline s1–3 | 3 | 0.210 | 0.404 | | 0.438 | 0.472 | 0.455 |
+| square_tent12 | 5 | 0.404 | 0.404 | 0.326@50k | 0.336 | 0.369 | 0.352 |
+| square_tent12 s1–3 | 3 | 0.407 | 0.428 | | 0.337 | 0.397 | 0.367 |
+| square_tent12_hq | 3 | 0.330 | 0.378 | 0.287@15k | 0.437 | 0.490 | 0.463 |
+| square_fixalpha_03 | 5 | 0.358 | 0.414 | 0.332@5k | 0.399 | 0.364 | 0.382 |
+| square_iql | 3 | 0.503 | 0.437 | 0.370@30k | 0.477 | 0.562 | 0.519 |
+| square_mix_prefill | 3 | 0.030 | 0.432 | 0.030@10k | 0.627 | 0.622 | 0.624 |
+| square_tent6 | 3 | 0.277 | 0.378 | 0.243@65k | 0.300 | 0.292 | 0.296 |
+
+  tent12의 "최저"가 42k(0.404)가 아니라 50k(0.326)인 것에 주의 — tent12의 최저는 dip이 아니라 후반 하강의 시작점이다. 그래서 초반 판정은 최저가 아니라 **42k 점**으로 한다.
+- **사전 판정(Square 4 arm 공통)**
+  - **주 지표 1 = env 42,032 seed 평균**(dip 시점). **주 지표 2 = env 127,136 seed 평균**. **관건 지표 = 초기 AUC의 seed-matched 차이 vs tent12 s1–3**(hq형 초반 비용 −0.050 ± 0.040의 회피 여부).
+
+| 결과 | 해석 |
+|---|---|
+| 42k ≥ 0.494(π_dp) **그리고** 127k ≥ 0.62(mix_prefill) | 전이 완성 — "보상 정규화 후 tent12i" 또는 "cap"이 두 과제 공통 처방(Can 회귀가 무해할 때) |
+| 42k ≥ 0.404(tent12) 그리고 127k ≥ 0.472(baseline s1–3) | 후반 손실만 해결, 초반은 tent12 동급(π_dp 아래 dip은 별도 문제로 남음) |
+| 127k ≥ 0.472인데 42k < 0.404 또는 초기 AUC가 tent12 s1–3 대비 3/3 음수 | hq형 — 보너스가 초반에 필요하다는 뜻 → cap 값 조정(cap1 결과가 방향) |
+| 둘 다 아님 | Q 폭주는 결과지 원인이 아님 → γ 0.999·과제 난이도 쪽 |
+
+  - 보조: 초기 창 평균곡선 최저, 초기 AUC, 102k/127k 평균, seed-matched 차이 vs tent12 s1–3 · tent12_hq s1–3 · baseline s1–3 · square_tent12i s1–3(대조군). 진단(판정 아님): `ent_coef`(actor α), `critic_ent_coef`(cap이 물린 구간), `qw_mean`, `logp_mean`(≈ −12 유지), `mu_absmean`.
+  - 진단 예측: cap03·cap1 모두 actor α가 전 구간 **1 아래**(hq처럼 0.17–0.37 — α 폭주가 보너스 → Q 부풀림 → α의 되먹임이라면 상한이 고리를 끊는다), `qw_mean` < 500; rs02는 α < 1(선형이면 tent12의 1/5 ≈ 3–4, 되먹임이 끊기면 < 0.4), `qw_mean`/0.2 < 500. **반증**: cap을 걸어도 α가 15–20으로 가면 α 상승은 보너스 되먹임이 아니라 보상 Q 기울기 자체의 성장.
+  - **갈래 A와 B의 관계**: A가 되면 "스케일 문제였다"가 확정되고 B는 원리적 해법. A가 안 되고 B만 되면 "스케일이 아니라 보너스 누적 자체가 문제". 둘 다 돌려야 갈린다. cap03 ≈ cap1이면 "상한 값은 무관, 폭주만 막으면 됨"; cap1이 tent12형 붕괴면 보너스 ~12/step도 과함.
+- **Can 회귀 `can_tent12i_cap03` 판정**: seed-matched(s1–3) vs `can_tent12i` — online 5,008 평균 ≥ 0.405(참조 tent12i 0.530 ± 0.230), 초기 AUC 차이·129k 차이가 각각 0 ± SE 안이고 3/3 같은 방향이 아니면 **"해치지 않음"**(참조 tent12i 초기 AUC 0.594 ± 0.052, 129k 0.697 ± 0.058, 104k/129k 0.676 ± 0.072). 3/3 같은 방향 + |차이| > SE면 "cap 0.3은 Can에 비용" → cap 0.5 재시험. `tent12i_hq`형 손실(AUC −0.204 ± 0.062, 전 구간)은 보너스의 70%가 남는 cap에서 나오면 안 된다.
+- **검정력**: Square 127k per-seed SD ≈ 0.13 → n=3 SE ≈ 0.075 — tent12(0.369)와 mix_prefill(0.622)처럼 2 SE 이상 떨어진 참조만 가른다; 0.47 vs 0.49는 못 가른다 → "시사"까지. 42k는 100 ep(이항 SE 0.05) + seed 이질성. Can 초기 AUC SD 0.035–0.06이라 ±0.05는 n=3으로 읽힌다. §23의 다중비교 규칙(df=2 paired, |t| > 4.3 ∧ 3/3만)을 그대로 쓴다.
+- **분석**: 새 폴더에 번들을 풀고 `python scripts/plot_results.py --logs <폴더>/logs --out results/<날짜>/square_transfer --axes "square_cap=square_baseline,square_tent12,square_tent12_hq,square_tent12i,square_tent12i_cap03,square_tent12i_cap1;square_rs=square_baseline,square_tent12,square_fixalpha_03,square_mix_prefill,square_tent12i,square_tent12i_rs02,square_fixa015_rs02;can_cap=baseline,tent12i,tent12i_hq,tent12i_cap03"`. cap이 물린 구간은 train_log의 `critic_ent_coef == cap`으로 읽는다(진단 패널에는 아직 없음).
+- **쓰면 안 되는 문장**: §22–23·9/8 README §4·§8 목록 그대로. 추가로 "cap이 Can에서 no-op"(20k–85k에 물린다), "Q_W가 폭주해서 후반이 무너졌다"(인과 아님 — 이 실험이 그 검정), "reward_scale이 dip 시점을 움직인다"(Can §19.1 기각), "α 0.15가 답", "hq는 baseline보다 나쁘다".
+- **문헌(9/15 검색·검증)**: 결과는 아래 §24.1에 둔다(검색 워크플로가 끝나는 대로 갱신).

@@ -6,3 +6,5 @@ can_tent6_s2     can     seed=2 train.target_ent=6 train.total_env_steps=100000
 can_tent6_s3     can     seed=3 train.target_ent=6 train.total_env_steps=100000
 # square_tent9_s1  square  seed=1 train.target_ent=9 train.total_env_steps=150000
 # can_prefill_tent12_s1 can seed=1 offline_mix.mode=prefill load_offline_data=True offline_data_path=/content/drive/MyDrive/dsrl_project/offline/can_train_offline.npz train.target_ent=12 train.ent_coef=auto_0.3 train.total_env_steps=150000
+# square_tent12i_cap03_s1 square seed=1 train.ent_coef=auto_0.3 train.target_ent=12 train.critic_alpha_cap=0.3 train.total_env_steps=150000
+# square_tent12i_rs02_s1  square seed=1 train.ent_coef=auto_0.3 train.target_ent=12 train.reward_scale=0.2 train.total_env_steps=150000

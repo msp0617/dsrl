@@ -106,6 +106,40 @@ def test_prefill_fixa015_is_a_single_fixed_alpha_arm():
     assert "runtime.unassign()" in code
 
 
+def test_square_rs_launches_two_rescaled_arms_and_the_t12i_control():
+    code = notebook_code("vm_square_rs.ipynb")
+    assert "--config-name=dsrl_square.yaml" in code
+    assert 'T12I="train.ent_coef=auto_0.3 train.target_ent=12"' in code
+    assert "launch square_tent12i_rs02_s$S seed=$S $T12I train.reward_scale=0.2\n" in code
+    assert "launch square_fixa015_rs02_s$S seed=$S train.ent_coef=0.15 train.reward_scale=0.2\n" in code
+    assert "launch square_tent12i_s$S      seed=$S $T12I\n" in code
+    assert code.count("launch square_") == 3 and "launch can_" not in code
+    assert "critic_alpha_cap" not in code and "critic_entropy_scale" not in code
+    assert "train.total_env_steps=150000" in code
+    assert "for kind in ('tent12i_rs02', 'fixa015_rs02', 'tent12i')" in code
+    assert "--only square_tent12i_rs02_s,square_fixa015_rs02_s,square_tent12i_s" in code
+    assert "runtime.unassign()" in code
+
+
+def test_square_cap_launches_two_caps_and_the_can_regression():
+    code = notebook_code("vm_square_cap.ipynb")
+    assert "--config-name=dsrl_square.yaml" in code and "--config-name=dsrl_can.yaml" in code
+    assert 'T12I="train.ent_coef=auto_0.3 train.target_ent=12"' in code
+    assert 'launch square_tent12i_cap03_s$S "$CFG_SQ"  seed=$S $T12I train.critic_alpha_cap=0.3\n' in code
+    assert 'launch square_tent12i_cap1_s$S  "$CFG_SQ"  seed=$S $T12I train.critic_alpha_cap=1.0\n' in code
+    assert 'launch can_tent12i_cap03_s$S    "$CFG_CAN" seed=$S $T12I train.critic_alpha_cap=0.3\n' in code
+    assert code.count("launch square_") == 2 and code.count("launch can_") == 1
+    assert "train.reward_scale" not in code and "critic_entropy_scale" not in code
+    assert "train.total_env_steps=150000" in code
+    # the unit tests and the cap smoke gate the launch cell
+    assert "scripts/test_offline_mix.py" in code and "scripts/test_notebook_launches.py" in code
+    assert "train.critic_alpha_cap=$CAP" in code and "for CAP in 0.3 -1; do" in code
+    assert "'critic_ent_coef' in rows[0]" in code
+    assert "for kind in ('cap03', 'cap1')" in code
+    assert "--only square_tent12i_cap03_s,square_tent12i_cap1_s,can_tent12i_cap03_s" in code
+    assert "runtime.unassign()" in code
+
+
 def test_new_notebooks_have_numbered_zero_to_nine_workflow():
     for name in (
         "vm1_new.ipynb",
@@ -114,6 +148,8 @@ def test_new_notebooks_have_numbered_zero_to_nine_workflow():
         "vm_hq_can.ipynb",
         "vm_prefill_alpha.ipynb",
         "vm_prefill_fixa015.ipynb",
+        "vm_square_rs.ipynb",
+        "vm_square_cap.ipynb",
     ):
         text = notebook_text(name)
         for section in range(10):

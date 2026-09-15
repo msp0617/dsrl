@@ -43,6 +43,18 @@ STATE_FILE = "run_state.json"
 SLOTS = ("a", "b")
 
 
+def critic_ent_coef(ent_coef, cap):
+    """Temperature the critic target uses: alpha itself, or min(alpha, cap) when cap > 0.
+
+    The actor keeps the automatic alpha; only the entropy bonus inside the TD
+    target is bounded, so wherever alpha stays below the cap the update is
+    identical to upstream.
+    """
+    if cap is None or float(cap) <= 0:
+        return ent_coef
+    return th.clamp(ent_coef, max=float(cap))
+
+
 class DSRLResumable(DSRL):
     """DSRL-NA with a checkpoint that can actually be resumed from.
 
@@ -65,7 +77,7 @@ class DSRLResumable(DSRL):
     # decays: with Adam, log(alpha) moves about lr per gradient step while the
     # entropy sits above its target.
     ent_coef_lr = None
-    # Two levers on the critic target, both 1.0 upstream:
+    # Three levers on the critic target, all inert at their defaults:
     #   reward_scale         r -> c * r, scales the reward-driven part of Q (and
     #                        its gradient w.r.t. w) without touching the entropy
     #                        bonus; success rate and the logged returns are not
@@ -73,8 +85,13 @@ class DSRLResumable(DSRL):
     #   critic_entropy_scale beta in next_q - beta * alpha * log pi(a'|s'); 0 is a
     #                        hard backup, which removes the alpha-driven offset
     #                        that makes early Q_W positive.
+    #   critic_alpha_cap     c > 0 replaces alpha in that bonus by min(alpha, c);
+    #                        the actor loss keeps the automatic alpha. Binds only
+    #                        where auto-alpha climbs above c (Square at target
+    #                        entropy 12: alpha 15-20, Q_W 2e4), a no-op below it.
     reward_scale = 1.0
     critic_entropy_scale = 1.0
+    critic_alpha_cap = -1.0
     gate = None  # GateController when gate.enabled
 
     def _excluded_save_params(self):
@@ -130,7 +147,7 @@ class DSRLResumable(DSRL):
             optimizers += [self.ent_coef_optimizer]
         self._update_learning_rate(optimizers)
 
-        ent_coef_losses, ent_coefs = [], []
+        ent_coef_losses, ent_coefs, critic_ent_coefs = [], [], []
         actor_losses, critic_losses, noise_critic_losses = [], [], []
         diag = {}
 
@@ -164,6 +181,9 @@ class DSRLResumable(DSRL):
             else:
                 ent_coef = self.ent_coef_tensor
             ent_coefs.append(ent_coef.item())
+            # The temperature the target sees; equal to ent_coef unless the cap binds.
+            ent_coef_c = critic_ent_coef(ent_coef, self.critic_alpha_cap)
+            critic_ent_coefs.append(ent_coef_c.item())
 
             if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
                 self.ent_coef_optimizer.zero_grad()
@@ -184,7 +204,7 @@ class DSRLResumable(DSRL):
                     next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
                 elif self.critic_backup_combine_type == "mean":
                     next_q_values = th.mean(next_q_values, dim=1, keepdim=True)
-                bonus = ent_coef * next_log_prob.reshape(-1, 1)
+                bonus = ent_coef_c * next_log_prob.reshape(-1, 1)
                 beta = self.critic_entropy_scale
                 if self.gate is not None and not self.gate.open and self.gate.actuator == "hard_backup":
                     beta = 0.0
@@ -265,6 +285,7 @@ class DSRLResumable(DSRL):
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/ent_coef", np.mean(ent_coefs))
+        self.logger.record("train/critic_ent_coef", np.mean(critic_ent_coefs))
         self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
         self.logger.record("train/noise_critic_loss", np.mean(noise_critic_losses))
@@ -329,6 +350,7 @@ def config_fingerprint(cfg):
         "ent_coef_lr": float(cfg.train.get("ent_coef_lr", -1) or -1),
         "reward_scale": float(cfg.train.get("reward_scale", 1.0)),
         "critic_entropy_scale": float(cfg.train.get("critic_entropy_scale", 1.0)),
+        "critic_alpha_cap": float(cfg.train.get("critic_alpha_cap", -1)),
     })
     pretrain = cfg.get("pretrain", None)
     if pretrain is not None:
@@ -460,6 +482,7 @@ def build_agent(cfg, env, base_policy, buffer_size, replay_buffer_kwargs=None,
             model.ent_coef_lr = ent_coef_lr
         model.reward_scale = float(cfg.train.get("reward_scale", 1.0))
         model.critic_entropy_scale = float(cfg.train.get("critic_entropy_scale", 1.0))
+        model.critic_alpha_cap = float(cfg.train.get("critic_alpha_cap", -1))
         gate = cfg.get("gate", None)
         if gate is not None and bool(gate.get("enabled", False)):
             model.gate = GateController.from_cfg(gate)

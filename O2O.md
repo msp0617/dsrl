@@ -174,6 +174,21 @@ identically. p is a pure function of the env-step count, kept current by
 parameters are part of the run fingerprint. `scripts/test_offline_mix.py`
 covers the schedule, the batch composition and the fingerprint without torch.
 
+## Critic-target levers
+
+Three switches on the TD target, all inert at their defaults, live in
+`DSRLResumable.train` and enter the run fingerprint (a checkpoint written under
+one setting is not resumed under another):
+
+| key | default | effect on the target `r + γ(Q̄ − α·log π′)` |
+|---|---|---|
+| `train.reward_scale` | 1.0 | `r → c·r`; logged returns and success are not scaled, only Q values (and `q_start`, `qw_mean`) are |
+| `train.critic_entropy_scale` | 1.0 | `β` on the bonus, `−β·α·log π′`; 0 is a hard backup |
+| `train.critic_alpha_cap` | −1 (off) | the bonus uses `min(α, cap)` while the actor loss keeps the automatic `α`; binds only where auto-alpha climbs above the cap |
+
+`train_log.csv` records `critic_ent_coef`, the temperature the target actually
+used, next to `ent_coef`, so the steps where a cap binds can be read off the log.
+
 ## Diagnostics
 
 The dip has two candidate causes: an inaccurate critic (Q_W random at the

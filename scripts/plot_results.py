@@ -64,6 +64,13 @@ DEFAULT_AXES = {
     "adaptive": ["baseline", "iql", "mix_prefill", "fixalpha_03", "tent12", "tent12i", "tent6"],
     "scale": ["baseline", "rs_025", "rs_05", "rs_2", "hardq"],
     "gate": ["baseline", "hardq", "gate_sig", "gate_clk"],
+    # 9/15 Square transfer: critic-only alpha cap (train.critic_alpha_cap) and
+    # reward rescaling (train.reward_scale=0.2); can_cap is the Can regression.
+    "square_cap": ["square_baseline", "square_tent12", "square_tent12_hq", "square_tent12i",
+                   "square_tent12i_cap03", "square_tent12i_cap1"],
+    "square_rs": ["square_baseline", "square_tent12", "square_fixalpha_03", "square_mix_prefill",
+                  "square_tent12i", "square_tent12i_rs02", "square_fixa015_rs02"],
+    "can_cap": ["baseline", "tent12i", "tent12i_hq", "tent12i_cap03"],
 }
 DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean", "offline_p", "qw_mean",
              "ratio_ge_gq", "gq_norm"]

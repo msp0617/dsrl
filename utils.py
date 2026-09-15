@@ -230,7 +230,7 @@ class LoggingCallback(BaseCallback):
             "ent_coef_loss": float(values.get('train/ent_coef_loss', float('nan'))),
         }
         # Offline-mix share and the dip diagnostics recorded by DSRLResumable.train.
-        for key in ("offline_p", "w_absmean", "w_std", "w_frac_sat", "mu_absmean",
+        for key in ("critic_ent_coef", "offline_p", "w_absmean", "w_std", "w_frac_sat", "mu_absmean",
                     "log_std_mean", "logp_mean", "qw_mean", "qw_absmean", "gq_norm", "ge_norm", "ratio_ge_gq",
                     "gate_open", "gate_open_call"):
             row[key] = float(values.get('train/' + key, float('nan')))

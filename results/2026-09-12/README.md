@@ -86,7 +86,8 @@ df=2 paired 검정을 ~70개 했으므로 개별 p는 쓰지 않는다. |t| > 4.
 ## 5. 다음 (권고)
 
 - 판별 run `can_prefill_fixa015_s{1,2,3}`: prefill + `train.ent_coef=0.15`(제어기 없음). 5k dip 유무로 "수준 vs 과도", 129k(~0.85 vs ~0.74)로 "α 수준 vs 제어기"를 가른다. 코드 변경 없음, 3 run ≈ 3 h.
-- 하지 않는 것: β 스케줄, 목표 엔트로피 스케줄, α 사다리 확장, Square 이식, 300k, Cal-QL+hq, LP-DS 비교.
+- **(9/15 추가) Square 전이 실험** — `HANDOFF.md` §24: critic 타깃 보너스 상한 `train.critic_alpha_cap`(신규, `square_tent12i_cap03/cap1` + Can 회귀 `can_tent12i_cap03`)과 보상 정규화 `train.reward_scale=0.2`(`square_tent12i_rs02`, `square_fixa015_rs02`) + 대조군 `square_tent12i`. 노트북 `colab/vm_square_rs.ipynb`·`colab/vm_square_cap.ipynb`, 사전 판정은 §24 표. 이것으로 아래 "Square 이식"은 "하지 않는 것"에서 뺀다(가설이 데이터에서 나왔으므로).
+- 하지 않는 것: β 스케줄, 목표 엔트로피 스케줄, α 사다리 확장, 300k, Cal-QL+hq, LP-DS 비교.
 
 ## 6. 발표용 초안 — 30초 답과 주장 등급표 (§21에서 요구, 이 결과까지 반영)
 

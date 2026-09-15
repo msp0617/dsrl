@@ -18,6 +18,7 @@ import numpy as np
 def install_stubs():
     torch = types.ModuleType("torch")
     torch.cat = lambda parts, dim=0: np.concatenate(parts, axis=dim)
+    torch.clamp = lambda x, min=None, max=None: np.clip(x, min, max)
     torch.get_rng_state = lambda: b"cpu-rng"
     torch.set_rng_state = lambda state: None
     torch.cuda = types.SimpleNamespace(
@@ -189,12 +190,13 @@ class Cfg(dict):
     __getattr__ = dict.__getitem__
 
 
-def make_cfg(mode="none", ent_coef_lr=-1, reward_scale=1.0, critic_entropy_scale=1.0):
+def make_cfg(mode="none", ent_coef_lr=-1, reward_scale=1.0, critic_entropy_scale=1.0, critic_alpha_cap=-1):
     return Cfg(
         algorithm="dsrl_na", env_name="can", obs_dim=23, action_dim=7, act_steps=4,
         train=Cfg(layer_size=2048, num_layers=3, n_critics=2, use_layer_norm=True, buffer_size=200000,
                   ent_coef=-1, target_ent=0.0, ent_coef_lr=ent_coef_lr,
-                  reward_scale=reward_scale, critic_entropy_scale=critic_entropy_scale),
+                  reward_scale=reward_scale, critic_entropy_scale=critic_entropy_scale,
+                  critic_alpha_cap=critic_alpha_cap),
         env=Cfg(n_envs=4), variant="baseline",
         offline_mix=Cfg(mode=mode, p0=0.8, p1=0.1, until_env=100000),
     )
@@ -289,6 +291,35 @@ def test_critic_target_levers_default_to_upstream_and_enter_the_fingerprint():
     except RuntimeError:
         return
     raise AssertionError("a hard-backup checkpoint resumed under the soft backup")
+
+
+def test_critic_alpha_cap_is_off_by_default_and_enters_the_fingerprint():
+    assert o2o_utils.DSRLResumable.critic_alpha_cap == -1.0
+    assert o2o_utils.config_fingerprint(make_cfg())["critic_alpha_cap"] == -1.0
+    assert o2o_utils.config_fingerprint(make_cfg(critic_alpha_cap=0.3))["critic_alpha_cap"] == 0.3
+    # A config written before the lever existed must still resume: the key is
+    # simply absent from the saved fingerprint.
+    cfg = make_cfg()
+    del cfg.train["critic_alpha_cap"]
+    assert o2o_utils.config_fingerprint(cfg)["critic_alpha_cap"] == -1.0
+    old = {"config": o2o_utils.config_fingerprint(make_cfg(critic_alpha_cap=0.3))}
+    try:
+        o2o_utils.check_fingerprint(old, make_cfg())
+    except RuntimeError:
+        return
+    raise AssertionError("a capped-critic checkpoint resumed with the cap off")
+
+
+def test_critic_ent_coef_caps_only_above_the_cap():
+    # cap <= 0 is "off": the critic sees the actor's alpha unchanged
+    assert o2o_utils.critic_ent_coef(0.5, -1) == 0.5
+    assert o2o_utils.critic_ent_coef(0.5, 0) == 0.5
+    # cap > 0: min(alpha, cap), so below the cap nothing changes (the Can case)
+    assert float(o2o_utils.critic_ent_coef(np.float64(0.2), 0.3)) == 0.2
+    assert float(o2o_utils.critic_ent_coef(np.float64(0.3), 0.3)) == 0.3
+    # and above it the target uses the cap (Square, alpha 15-20)
+    assert float(o2o_utils.critic_ent_coef(np.float64(15.4), 0.3)) == 0.3
+    assert float(o2o_utils.critic_ent_coef(np.float64(15.4), 1.0)) == 1.0
 
 
 def test_fingerprint_carries_the_schedule_only_when_it_matters():
