@@ -176,7 +176,7 @@ covers the schedule, the batch composition and the fingerprint without torch.
 
 ## Critic-target levers
 
-Three switches on the TD target, all inert at their defaults, live in
+Four switches on the TD target, all inert at their defaults, live in
 `DSRLResumable.train` and enter the run fingerprint (a checkpoint written under
 one setting is not resumed under another):
 
@@ -185,6 +185,7 @@ one setting is not resumed under another):
 | `train.reward_scale` | 1.0 | `r → c·r`; logged returns and success are not scaled, only Q values (and `q_start`, `qw_mean`) are |
 | `train.critic_entropy_scale` | 1.0 | `β` on the bonus, `−β·α·log π′`; 0 is a hard backup |
 | `train.critic_alpha_cap` | −1 (off) | the bonus uses `min(α, cap)` while the actor loss keeps the automatic `α`; binds only where auto-alpha climbs above the cap |
+| `train.critic_alpha_fixed` | −1 (off) | the bonus uses the constant `c` from the first update on (no binding moment), the actor loss again keeping the automatic `α`; mutually exclusive with the cap |
 
 `train_log.csv` records `critic_ent_coef`, the temperature the target actually
 used, next to `ent_coef`, so the steps where a cap binds can be read off the log.

@@ -36,6 +36,7 @@ from o2o_utils import (
     check_fingerprint,
     check_pretrain_path,
     config_fingerprint,
+    critic_temperature_settings,
     load_pretrained_weights,
     read_run_states,
     resolve_ckpt_dir,
@@ -127,6 +128,7 @@ def main(cfg: OmegaConf):
     if offline_mix_ratio > 0:
         replay_buffer_kwargs = dict(offline_mix_ratio=offline_mix_ratio)
     check_buffer_capacity(cfg, buffer_size)
+    critic_temperature_settings(cfg)  # cap and fixed critic temperature are exclusive
 
     # Everything that can rule out this run is checked before the environments
     # and the diffusion policy are built, which costs minutes.

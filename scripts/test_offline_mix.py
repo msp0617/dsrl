@@ -19,6 +19,7 @@ def install_stubs():
     torch = types.ModuleType("torch")
     torch.cat = lambda parts, dim=0: np.concatenate(parts, axis=dim)
     torch.clamp = lambda x, min=None, max=None: np.clip(x, min, max)
+    torch.full_like = lambda x, value: np.full_like(np.asarray(x, dtype=float), value)
     torch.get_rng_state = lambda: b"cpu-rng"
     torch.set_rng_state = lambda state: None
     torch.cuda = types.SimpleNamespace(
@@ -190,13 +191,14 @@ class Cfg(dict):
     __getattr__ = dict.__getitem__
 
 
-def make_cfg(mode="none", ent_coef_lr=-1, reward_scale=1.0, critic_entropy_scale=1.0, critic_alpha_cap=-1):
+def make_cfg(mode="none", ent_coef_lr=-1, reward_scale=1.0, critic_entropy_scale=1.0, critic_alpha_cap=-1,
+             critic_alpha_fixed=-1, discount=0.99):
     return Cfg(
         algorithm="dsrl_na", env_name="can", obs_dim=23, action_dim=7, act_steps=4,
         train=Cfg(layer_size=2048, num_layers=3, n_critics=2, use_layer_norm=True, buffer_size=200000,
                   ent_coef=-1, target_ent=0.0, ent_coef_lr=ent_coef_lr,
                   reward_scale=reward_scale, critic_entropy_scale=critic_entropy_scale,
-                  critic_alpha_cap=critic_alpha_cap),
+                  critic_alpha_cap=critic_alpha_cap, critic_alpha_fixed=critic_alpha_fixed, discount=discount),
         env=Cfg(n_envs=4), variant="baseline",
         offline_mix=Cfg(mode=mode, p0=0.8, p1=0.1, until_env=100000),
     )
@@ -320,6 +322,60 @@ def test_critic_ent_coef_caps_only_above_the_cap():
     # and above it the target uses the cap (Square, alpha 15-20)
     assert float(o2o_utils.critic_ent_coef(np.float64(15.4), 0.3)) == 0.3
     assert float(o2o_utils.critic_ent_coef(np.float64(15.4), 1.0)) == 1.0
+
+
+def test_critic_alpha_fixed_is_off_by_default_and_enters_the_fingerprint():
+    assert o2o_utils.DSRLResumable.critic_alpha_fixed == -1.0
+    assert o2o_utils.config_fingerprint(make_cfg())["critic_alpha_fixed"] == -1.0
+    assert o2o_utils.config_fingerprint(make_cfg(critic_alpha_fixed=1.0))["critic_alpha_fixed"] == 1.0
+    cfg = make_cfg()
+    del cfg.train["critic_alpha_fixed"]
+    assert o2o_utils.config_fingerprint(cfg)["critic_alpha_fixed"] == -1.0
+    # A checkpoint written before the key existed (no critic_alpha_fixed / discount
+    # in its saved fingerprint) must still resume under the new code.
+    saved = {"config": o2o_utils.config_fingerprint(make_cfg())}
+    del saved["config"]["critic_alpha_fixed"]
+    del saved["config"]["discount"]
+    o2o_utils.check_fingerprint(saved, make_cfg())
+    old = {"config": o2o_utils.config_fingerprint(make_cfg(critic_alpha_fixed=1.0))}
+    for other in (make_cfg(), make_cfg(critic_alpha_cap=1.0)):
+        try:
+            o2o_utils.check_fingerprint(old, other)
+        except RuntimeError:
+            continue
+        raise AssertionError("a fixed-critic-temperature checkpoint resumed under another temperature rule")
+
+
+def test_critic_ent_coef_fixed_ignores_alpha_and_the_cap_is_exclusive():
+    # fixed > 0: the target uses the constant whatever alpha is, below or above it
+    assert float(o2o_utils.critic_ent_coef(np.float64(0.2), -1, 1.0)) == 1.0
+    assert float(o2o_utils.critic_ent_coef(np.float64(15.4), -1, 1.0)) == 1.0
+    assert float(o2o_utils.critic_ent_coef(np.float64(0.2), -1, 0.3)) == 0.3
+    # fixed <= 0 / None: unchanged behaviour (alpha, or min(alpha, cap))
+    assert float(o2o_utils.critic_ent_coef(np.float64(15.4), 0.3, -1)) == 0.3
+    assert float(o2o_utils.critic_ent_coef(np.float64(0.2), -1, None)) == 0.2
+    assert o2o_utils.critic_temperature_settings(make_cfg()) == (-1.0, -1.0)
+    assert o2o_utils.critic_temperature_settings(make_cfg(critic_alpha_cap=0.3)) == (0.3, -1.0)
+    assert o2o_utils.critic_temperature_settings(make_cfg(critic_alpha_fixed=1.0)) == (-1.0, 1.0)
+    try:
+        o2o_utils.critic_temperature_settings(make_cfg(critic_alpha_cap=0.3, critic_alpha_fixed=1.0))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("cap and fixed critic temperature were both accepted")
+
+
+def test_fingerprint_carries_the_discount():
+    assert o2o_utils.config_fingerprint(make_cfg())["discount"] == 0.99
+    cfg = make_cfg()
+    del cfg.train["discount"]
+    assert o2o_utils.config_fingerprint(cfg)["discount"] == -1.0
+    old = {"config": o2o_utils.config_fingerprint(make_cfg(discount=0.999))}
+    try:
+        o2o_utils.check_fingerprint(old, make_cfg(discount=0.99))
+    except RuntimeError:
+        return
+    raise AssertionError("a gamma 0.999 checkpoint resumed under gamma 0.99")
 
 
 def test_fingerprint_carries_the_schedule_only_when_it_matters():

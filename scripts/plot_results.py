@@ -71,6 +71,14 @@ DEFAULT_AXES = {
     "square_rs": ["square_baseline", "square_tent12", "square_fixalpha_03", "square_mix_prefill",
                   "square_tent12i", "square_tent12i_rs02", "square_fixa015_rs02"],
     "can_cap": ["baseline", "tent12i", "tent12i_hq", "tent12i_cap03"],
+    # 9/16 follow-up: the alpha-init confound (square_tent12r = tent12 re-run in
+    # the same batch as tent12i s4-5 / cap03 s4-5) and the cap-1.0 puzzle
+    # (critic temperature fixed from the start, train.critic_alpha_fixed; the
+    # gamma 0.99 diagnostic train.discount=0.99).
+    "square_a0": ["square_baseline", "square_tent12", "square_tent12r", "square_tent12_hq", "square_tent12i",
+                  "square_tent12i_cap03"],
+    "square_cfix": ["square_tent12", "square_tent12i", "square_tent12i_cap03", "square_tent12i_cap1",
+                    "square_tent12i_cfix03", "square_tent12i_cfix1", "square_tent12i_g099"],
 }
 DIAG_COLS = ["ent_coef", "mu_absmean", "w_absmean", "w_frac_sat", "log_std_mean", "offline_p", "qw_mean",
              "ratio_ge_gq", "gq_norm"]

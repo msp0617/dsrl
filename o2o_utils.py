@@ -43,13 +43,18 @@ STATE_FILE = "run_state.json"
 SLOTS = ("a", "b")
 
 
-def critic_ent_coef(ent_coef, cap):
-    """Temperature the critic target uses: alpha itself, or min(alpha, cap) when cap > 0.
+def critic_ent_coef(ent_coef, cap, fixed=None):
+    """Temperature the critic target uses.
 
-    The actor keeps the automatic alpha; only the entropy bonus inside the TD
-    target is bounded, so wherever alpha stays below the cap the update is
-    identical to upstream.
+    alpha itself by default; min(alpha, cap) when cap > 0; the constant `fixed`
+    when fixed > 0 (from the first update, whatever alpha does). The actor keeps
+    the automatic alpha in every case; only the entropy bonus inside the TD
+    target is changed, so with both levers off the update is identical to
+    upstream. A fixed critic temperature has no onset: the cap's "binding
+    moment" (alpha crossing the cap after Q has already grown) does not exist.
     """
+    if fixed is not None and float(fixed) > 0:
+        return th.full_like(ent_coef, float(fixed))
     if cap is None or float(cap) <= 0:
         return ent_coef
     return th.clamp(ent_coef, max=float(cap))
@@ -89,9 +94,14 @@ class DSRLResumable(DSRL):
     #                        the actor loss keeps the automatic alpha. Binds only
     #                        where auto-alpha climbs above c (Square at target
     #                        entropy 12: alpha 15-20, Q_W 2e4), a no-op below it.
+    #   critic_alpha_fixed   c > 0 replaces alpha in that bonus by the constant c
+    #                        from the first update on (no binding moment), the
+    #                        actor loss again keeping the automatic alpha.
+    #                        Mutually exclusive with critic_alpha_cap.
     reward_scale = 1.0
     critic_entropy_scale = 1.0
     critic_alpha_cap = -1.0
+    critic_alpha_fixed = -1.0
     gate = None  # GateController when gate.enabled
 
     def _excluded_save_params(self):
@@ -181,8 +191,9 @@ class DSRLResumable(DSRL):
             else:
                 ent_coef = self.ent_coef_tensor
             ent_coefs.append(ent_coef.item())
-            # The temperature the target sees; equal to ent_coef unless the cap binds.
-            ent_coef_c = critic_ent_coef(ent_coef, self.critic_alpha_cap)
+            # The temperature the target sees; equal to ent_coef unless the cap
+            # binds or the critic temperature is fixed.
+            ent_coef_c = critic_ent_coef(ent_coef, self.critic_alpha_cap, self.critic_alpha_fixed)
             critic_ent_coefs.append(ent_coef_c.item())
 
             if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
@@ -351,6 +362,10 @@ def config_fingerprint(cfg):
         "reward_scale": float(cfg.train.get("reward_scale", 1.0)),
         "critic_entropy_scale": float(cfg.train.get("critic_entropy_scale", 1.0)),
         "critic_alpha_cap": float(cfg.train.get("critic_alpha_cap", -1)),
+        "critic_alpha_fixed": float(cfg.train.get("critic_alpha_fixed", -1)),
+        # gamma changes the target (and the eval-time mc_return); a 0.999
+        # checkpoint must not continue under 0.99.
+        "discount": float(cfg.train.get("discount", -1)),
     })
     pretrain = cfg.get("pretrain", None)
     if pretrain is not None:
@@ -427,6 +442,16 @@ def check_buffer_capacity(cfg, buffer_size):
 
 # ------------------------------------------------------------ agent building
 
+def critic_temperature_settings(cfg):
+    """(critic_alpha_cap, critic_alpha_fixed) from the config; at most one may be on."""
+    cap = float(cfg.train.get("critic_alpha_cap", -1))
+    fixed = float(cfg.train.get("critic_alpha_fixed", -1))
+    if cap > 0 and fixed > 0:
+        raise ValueError("train.critic_alpha_cap and train.critic_alpha_fixed are mutually exclusive "
+                         "(cap %g, fixed %g)" % (cap, fixed))
+    return cap, fixed
+
+
 def build_agent(cfg, env, base_policy, buffer_size, replay_buffer_kwargs=None,
                 tensorboard_log=None, verbose=1):
     """The one place the networks are shaped.
@@ -482,7 +507,7 @@ def build_agent(cfg, env, base_policy, buffer_size, replay_buffer_kwargs=None,
             model.ent_coef_lr = ent_coef_lr
         model.reward_scale = float(cfg.train.get("reward_scale", 1.0))
         model.critic_entropy_scale = float(cfg.train.get("critic_entropy_scale", 1.0))
-        model.critic_alpha_cap = float(cfg.train.get("critic_alpha_cap", -1))
+        model.critic_alpha_cap, model.critic_alpha_fixed = critic_temperature_settings(cfg)
         gate = cfg.get("gate", None)
         if gate is not None and bool(gate.get("enabled", False)):
             model.gate = GateController.from_cfg(gate)

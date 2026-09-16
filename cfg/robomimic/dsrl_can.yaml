@@ -118,6 +118,10 @@ train:
   # peaks at ~0.42). train_log's critic_ent_coef is the temperature the
   # target actually used.
   critic_alpha_cap: -1
+  # critic_alpha_fixed c > 0: the target's bonus uses the constant c from the
+  # first update on (no binding moment), the actor again keeping the
+  # automatic alpha; -1 = off. Mutually exclusive with critic_alpha_cap.
+  critic_alpha_fixed: -1
   init_rollout_steps: 1501 # Number of rollout steps of standard diffusion policy to collect for replay buffer before training starts
   action_magnitude: 1.5 # Maximum action magnitude in noise action space
   n_critics: 2 # Number of critic Q networks

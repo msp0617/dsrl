@@ -18,6 +18,12 @@ def notebook_code(name):
     )
 
 
+def notebook_cells(name):
+    path = os.path.join(ROOT, "colab", name)
+    with open(path, encoding="utf-8") as f:
+        return [c for c in json.load(f)["cells"] if c.get("cell_type") == "code"]
+
+
 def notebook_text(name):
     path = os.path.join(ROOT, "colab", name)
     with open(path, encoding="utf-8") as f:
@@ -140,6 +146,48 @@ def test_square_cap_launches_two_caps_and_the_can_regression():
     assert "runtime.unassign()" in code
 
 
+def test_square_a0_reruns_tent12_under_a_new_id_and_adds_seeds_4_5():
+    code = notebook_code("vm_square_a0.ipynb")
+    assert "--config-name=dsrl_square.yaml" in code and "launch can_" not in code
+    assert 'T12I="train.ent_coef=auto_0.3 train.target_ent=12"' in code
+    # the re-run keeps tent12's original override (auto alpha, SB3 init 1.0) under a new exp_id:
+    # the same name would resume the finished 9/6 checkpoints
+    assert "launch square_tent12r_s$S       seed=$S train.target_ent=12\n" in code
+    assert "launch square_tent12_s" not in code
+    assert "launch square_tent12i_s$S       seed=$S $T12I\n" in code
+    assert "launch square_tent12i_cap03_s$S seed=$S $T12I train.critic_alpha_cap=0.3\n" in code
+    assert "for S in 1 2 3; do\n  launch square_tent12r_s$S" in code
+    assert "for S in 4 5; do\n  launch square_tent12i_s$S" in code
+    assert code.count("launch square_") == 3
+    assert "critic_alpha_fixed=" not in code and "train.discount" not in code and "train.reward_scale" not in code
+    assert "train.total_env_steps=150000" in code
+    assert "[f'square_tent12r_s{s}' for s in (1, 2, 3)] + [f'square_tent12i_s{s}' for s in (4, 5)] + [f'square_tent12i_cap03_s{s}' for s in (4, 5)]" in code
+    assert "--only square_tent12r_s,square_tent12i_s4,square_tent12i_s5,square_tent12i_cap03_s4,square_tent12i_cap03_s5" in code
+    assert "runtime.unassign()" in code
+
+
+def test_square_cfix_launches_fixed_critic_temperatures_and_the_gamma_arm():
+    code = notebook_code("vm_square_cfix.ipynb")
+    assert "--config-name=dsrl_square.yaml" in code and "launch can_" not in code
+    assert 'T12I="train.ent_coef=auto_0.3 train.target_ent=12"' in code
+    assert "launch square_tent12i_cfix03_s$S seed=$S $T12I train.critic_alpha_fixed=0.3\n" in code
+    assert "launch square_tent12i_cfix1_s$S  seed=$S $T12I train.critic_alpha_fixed=1.0\n" in code
+    assert "launch square_tent12i_g099_s$S   seed=$S $T12I train.discount=0.99\n" in code
+    assert code.count("launch square_") == 3
+    # the cap appears only in the smoke that checks cap+fixed is refused, never in a launch line
+    assert "$T12I train.critic_alpha_cap" not in code and "train.reward_scale" not in code
+    assert "train.total_env_steps=150000" in code
+    # the unit tests and the fixed-temperature smoke gate the launch cell; the smoke must
+    # prove "constant", not "min": fixed 2.0 above the actor's fixed alpha 1.0
+    assert "scripts/test_offline_mix.py" in code and "scripts/test_notebook_launches.py" in code
+    assert "for FIXED in 2.0 -1; do" in code and "train.critic_alpha_fixed=$FIXED" in code
+    assert "want = [fixed if fixed > 0 else x for x in a]" in code
+    assert "train.critic_alpha_cap=0.3 train.critic_alpha_fixed=1.0" in code and "mutually exclusive" in code
+    assert "for kind in ('cfix03', 'cfix1', 'g099')" in code
+    assert "--only square_tent12i_cfix03_s,square_tent12i_cfix1_s,square_tent12i_g099_s" in code
+    assert "runtime.unassign()" in code
+
+
 def test_new_notebooks_have_numbered_zero_to_nine_workflow():
     for name in (
         "vm1_new.ipynb",
@@ -150,10 +198,18 @@ def test_new_notebooks_have_numbered_zero_to_nine_workflow():
         "vm_prefill_fixa015.ipynb",
         "vm_square_rs.ipynb",
         "vm_square_cap.ipynb",
+        "vm_square_a0.ipynb",
+        "vm_square_cfix.ipynb",
     ):
         text = notebook_text(name)
         for section in range(10):
             assert f"## {section}." in text, (name, section)
+        # a shell cell must use the cell magic: "%bash" is not a line magic and the
+        # cell dies with a SyntaxError before running anything (caught 9/16)
+        for cell in notebook_cells(name):
+            first = "".join(cell.get("source", [])).split(chr(10), 1)[0]
+            if first.startswith("%"):
+                assert first.strip() == "%%bash", (name, first)
 
 
 if __name__ == "__main__":
